@@ -1,7 +1,7 @@
 FUNCTION z_ewm_rf_pick_dest_pai .
 *"----------------------------------------------------------------------
 *"*"Local Interface:
-*"  CHANGING
+*"  CHANGING 
 *"     REFERENCE(SELECTION) TYPE  /SCWM/S_RF_SELECTION OPTIONAL
 *"     REFERENCE(RESOURCE) TYPE  /SCWM/S_RSRC OPTIONAL
 *"     REFERENCE(WHO) TYPE  /SCWM/S_WHO_INT OPTIONAL
