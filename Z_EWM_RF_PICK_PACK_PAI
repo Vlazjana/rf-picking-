@@ -1,0 +1,208 @@
+FUNCTION z_ewm_rf_pick_pack_pai.
+*"----------------------------------------------------------------------
+*"*"Local Interface:
+*"  CHANGING
+*"     REFERENCE(SELECTION) TYPE  /SCWM/S_RF_SELECTION
+*"     REFERENCE(RESOURCE) TYPE  /SCWM/S_RSRC
+*"     REFERENCE(WHO) TYPE  /SCWM/S_WHO_INT
+*"     REFERENCE(ORDIM_CONFIRM) TYPE  /SCWM/S_RF_ORDIM_CONFIRM
+*"     REFERENCE(TT_ORDIM_CONFIRM) TYPE  /SCWM/TT_RF_ORDIM_CONFIRM
+*"     REFERENCE(TT_NESTED_HU) TYPE  /SCWM/TT_RF_NESTED_HU
+*"     REFERENCE(T_RF_PICK_HUS) TYPE  /SCWM/TT_RF_PICK_HUS
+*"     REFERENCE(CT_SERNR) TYPE  /SCWM/TT_RF_SERNR
+*"     REFERENCE(CT_SERNR_DIFF) TYPE  /SCWM/TT_RF_SERNR
+*"     REFERENCE(CS_SN) TYPE  /SCWM/S_RF_SN
+*"     REFERENCE(WME_VERIF) TYPE  /SCWM/S_WME_VERIF
+*"     REFERENCE(CT_SERNR_LSCK) TYPE  /SCWM/TT_RF_SERNR
+*"     REFERENCE(NESTPT) TYPE  /SCWM/S_RF_NESTED
+*"     REFERENCE(S_WHO_SCREEN) TYPE  ZSRF_ZPISYS_WHO_SCREEN
+*"     REFERENCE(ZT_WHO_SCREEN) TYPE  ZTTRF_ZPISYS_WHO_SCREEN
+*"----------------------------------------------------------------------
+
+
+  DATA: lv_fcode       TYPE /scwm/de_fcode,
+        lv_dup_line    TYPE i,
+        lv_line        TYPE i,
+        lv_leave_trans TYPE xfeld.
+  lv_fcode = /scwm/cl_rf_bll_srvc=>get_fcode( ).
+  lv_line  = /scwm/cl_rf_bll_srvc=>get_line( ).
+
+  DATA lv_check_tab TYPE i.
+  DATA lt_compact   TYPE zttrf_zpisys_who_screen.
+  CASE lv_fcode.
+
+    WHEN 'ENTER'.
+      "kontrollo sepse te te fundit pr01 mbyllet
+*      /scwm/cl_rf_bll_srvc=>set_flg_stack( iv_flg_stack = abap_true ).
+
+      LOOP AT gt_who_screen ASSIGNING FIELD-SYMBOL(<ls_row>) .
+        IF <ls_row>-matnr IS NOT INITIAL.
+
+          IF strlen( <ls_row>-matnr ) = 1.
+            " Scenario 1 - operator typed a single letter (ZZCODE)
+            DATA(lv_zzcode) = <ls_row>-matnr.
+            SELECT SINGLE matnr FROM ztewm_mat_imb
+              WHERE lgnum  = @resource-lgnum
+                AND zzcode = @lv_zzcode
+              INTO @DATA(lv_matnr).
+          ELSE.
+            " Operator typed full matnr → convert with leading zeros first
+            CALL FUNCTION 'CONVERSION_EXIT_MATN1_INPUT'
+              EXPORTING
+                input  = <ls_row>-matnr
+              IMPORTING
+                output = lv_matnr
+              EXCEPTIONS
+                OTHERS = 1.
+
+            IF sy-subrc <> 0.
+*              MESSAGE 'Invalid material number' TYPE 'E'.
+              MESSAGE e029(zewm_rf_msg).
+              RETURN.
+            ENDIF.
+
+            " Scenario 2 - operator typed full matnr
+            SELECT SINGLE matnr FROM ztewm_mat_imb
+              WHERE lgnum = @resource-lgnum
+                AND matnr = @<ls_row>-matnr
+              INTO @lv_matnr.
+          ENDIF.
+          IF sy-subrc <> 0.
+*            MESSAGE 'Packaging material not found' TYPE 'E'.
+            MESSAGE e030(zewm_rf_msg).
+            RETURN.
+          ENDIF.
+
+          " Set validated matnr back
+          <ls_row>-matnr = to_upper( lv_matnr ).
+
+          READ TABLE lt_compact WITH KEY matnr = lv_matnr
+                    TRANSPORTING NO FIELDS.
+          IF sy-subrc = 0.
+*            MESSAGE |Value already entered in the row{ sy-tabix }| TYPE 'E'.
+            MESSAGE e031(zewm_rf_msg) WITH sy-tabix.
+            RETURN.
+          ENDIF.
+          " Get description
+          SELECT SINGLE maktx FROM makt
+            WHERE matnr = @lv_matnr
+              AND spras = @sy-langu
+            INTO @<ls_row>-maktx.
+
+          APPEND <ls_row> TO lt_compact.
+        ELSE.
+
+          IF <ls_row>-nr_packaging IS NOT INITIAL.
+            MESSAGE e032(zewm_rf_msg).
+            RETURN.
+          ENDIF.
+
+          " Both empty → clear maktx too and count
+          CLEAR <ls_row>-maktx.
+          lv_check_tab += 1.
+
+        ENDIF.
+      ENDLOOP.
+
+      DO lv_check_tab TIMES.
+        APPEND INITIAL LINE TO lt_compact.
+      ENDDO.
+      Gt_who_screen = lt_compact.
+
+*    CLEAR gt_certificazione.
+*      SELECT *
+*        FROM ztewm_certificaz
+*        WHERE lgnum = @resource-lgnum
+*          AND who   = @who-who
+*        INTO TABLE @gt_certificazione.
+
+      IF gt_certificazione IS INITIAL.
+*        MESSAGE 'No printed labels found for this order' TYPE 'E'.
+        MESSAGE e033(zewm_rf_msg).
+        RETURN.
+      ENDIF.
+
+*      DELETE FROM ztewm_rf_rcv_sc6
+*  WHERE lgnum = @resource-lgnum
+*    AND rsrc  = @resource-rsrc
+*    AND who   = @who-who.
+
+      DATA lt_sc6 TYPE STANDARD TABLE OF ztewm_rf_rcv_sc6
+                  WITH EMPTY KEY.
+
+      LOOP AT gt_who_screen INTO DATA(ls_pkg)
+        WHERE matnr IS NOT INITIAL
+          AND nr_packaging > 0.
+        APPEND VALUE ztewm_rf_rcv_sc6(
+          mandt        = sy-mandt
+          lgnum        = resource-lgnum
+          rsrc         = resource-rsrc
+          who          = who-who
+          matnr        = ls_pkg-matnr
+          nr_packaging = ls_pkg-nr_packaging
+          maktx        = ls_pkg-maktx
+        ) TO lt_sc6.
+      ENDLOOP.
+
+      IF lt_sc6 IS NOT INITIAL.
+        MODIFY ztewm_rf_rcv_sc6 FROM TABLE @lt_sc6.
+        COMMIT WORK AND WAIT.
+      ENDIF.
+*      IF lv_check_tab = 3.
+*        MESSAGE 'Enter at least one row' TYPE 'E'.
+*        RETURN.
+*      ENDIF.
+*      gv_label_index = 1.
+*      gv_label_total = lines( gt_certificazione ).
+*
+**      " Read first label to show on ZPICK6
+*      READ TABLE gt_certificazione INDEX gv_label_index
+*        INTO DATA(ls_current).
+*
+**      /scwm/cl_rf_bll_srvc=>init_screen_param( ).
+**      /scwm/cl_rf_bll_srvc=>set_screen_param( 'S_WHO_SCREEN' ).
+**      /scwm/cl_rf_bll_srvc=>set_screen_param( 'ZT_WHO_SCREEN' ).
+**      CLEAR s_who_screen.
+*
+*      gv_label_current = ls_current-zzlabel.
+*      gv_label_counter = |{ gv_label_index } / { gv_label_total }|.
+
+
+*/scwm/cl_rf_bll_srvc=>set_ltrans( 'ZPICK6' ).
+
+    WHEN fcode_backf.
+*
+** /scwm/cl_rf_bll_srvc=>set_flg_stack( iv_flg_stack = abap_false ).
+**  /scwm/cl_rf_bll_srvc=>set_call_stack_optimizer( iv_step = '' ).
+*      " Clear label globals
+*      CLEAR: gt_certificazione,
+*             gv_label_index,
+*             gv_label_total,
+*             gv_label_current,
+*             gv_label_counter.
+*
+*      " Clear packaging rows
+*      CLEAR gt_who_screen.
+*      DO 3 TIMES.
+*        APPEND INITIAL LINE TO gt_who_screen.
+*      ENDDO.
+
+    WHEN OTHERS.
+
+      "  Ruaj në ZTEWM_RF_RECOV
+      DATA ls_recov TYPE ztewm_rf_recov.
+
+      MOVE-CORRESPONDING s_who_screen TO ls_recov.
+      ls_recov-mandt        = sy-mandt.
+      ls_recov-lgnum        = resource-lgnum.
+      ls_recov-rsrc         = resource-rsrc.
+      ls_recov-who          = who-who.
+      ls_recov-nr_etichette = gv_nr_etichette.
+      ls_recov-recover_scr  = 'ZPICK6'.
+
+      MODIFY ztewm_rf_recov FROM @ls_recov.
+
+  ENDCASE.
+
+
+ENDFUNCTION.
