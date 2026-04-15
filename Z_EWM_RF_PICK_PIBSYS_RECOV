@@ -1,0 +1,39 @@
+FUNCTION Z_EWM_RF_PICK_PIBSYS_RECOV.
+*"----------------------------------------------------------------------
+*"*"Local Interface:
+*"  CHANGING
+*"     REFERENCE(WHO) TYPE  /SCWM/S_WHO_INT
+*"     REFERENCE(RESOURCE) TYPE  /SCWM/S_RSRC
+*"     REFERENCE(RSRC_TYPE) TYPE  /SCWM/S_TRSRC_TYP
+*"     REFERENCE(T_RF_PICK_HUS) TYPE  /SCWM/TT_RF_PICK_HUS
+*"     REFERENCE(NESTPT) TYPE  /SCWM/S_RF_NESTED
+*"     REFERENCE(ORDIM_CONFIRM) TYPE  /SCWM/S_RF_ORDIM_CONFIRM
+*"     REFERENCE(TT_ORDIM_CONFIRM) TYPE  /SCWM/TT_RF_ORDIM_CONFIRM
+*"     REFERENCE(S_WHO_SCREEN) TYPE  ZSRF_ZPISYS_WHO_SCREEN
+*"----------------------------------------------------------------------
+  DATA: ls_ctx   TYPE zsS_ewm_rf_recov_ctx,
+        lv_found TYPE abap_bool.
+
+  PERFORM load_recov_ctx
+    USING    resource-lgnum
+    CHANGING ls_ctx
+             lv_found.
+
+  IF lv_found IS INITIAL.
+    RETURN.
+  ENDIF.
+
+  resource         = ls_ctx-resource.
+  s_who_screen     = ls_ctx-s_who_screen.
+  who              = ls_ctx-who.
+  ordim_confirm    = ls_ctx-ordim_confirm.
+  tt_ordim_confirm = ls_ctx-tt_ordim_confirm.
+  t_rf_pick_hus    = ls_ctx-t_rf_pick_hus.
+  nestpt           = ls_ctx-nestpt.
+
+  /scwm/cl_rf_bll_srvc=>set_prmod( '1' ).
+  /scwm/cl_rf_bll_srvc=>set_fcode( 'PIMTTO' ).
+
+
+
+ENDFUNCTION.
