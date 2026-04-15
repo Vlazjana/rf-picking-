@@ -1,0 +1,549 @@
+FUNCTION z_ewm_rf_pick_print_pai.
+*"----------------------------------------------------------------------
+*"*"Local Interface:
+*"  CHANGING
+*"     REFERENCE(SELECTION) TYPE  /SCWM/S_RF_SELECTION
+*"     REFERENCE(RESOURCE) TYPE  /SCWM/S_RSRC
+*"     REFERENCE(WHO) TYPE  /SCWM/S_WHO_INT
+*"     REFERENCE(ORDIM_CONFIRM) TYPE  /SCWM/S_RF_ORDIM_CONFIRM
+*"     REFERENCE(TT_ORDIM_CONFIRM) TYPE  /SCWM/TT_RF_ORDIM_CONFIRM
+*"     REFERENCE(TT_NESTED_HU) TYPE  /SCWM/TT_RF_NESTED_HU
+*"     REFERENCE(T_RF_PICK_HUS) TYPE  /SCWM/TT_RF_PICK_HUS
+*"     REFERENCE(CT_SERNR) TYPE  /SCWM/TT_RF_SERNR
+*"     REFERENCE(CT_SERNR_DIFF) TYPE  /SCWM/TT_RF_SERNR
+*"     REFERENCE(CS_SN) TYPE  /SCWM/S_RF_SN
+*"     REFERENCE(WME_VERIF) TYPE  /SCWM/S_WME_VERIF
+*"     REFERENCE(CT_SERNR_LSCK) TYPE  /SCWM/TT_RF_SERNR
+*"     REFERENCE(NESTPT) TYPE  /SCWM/S_RF_NESTED
+*"     REFERENCE(S_WHO_SCREEN) TYPE  ZSRF_ZPISYS_WHO_SCREEN
+*"     REFERENCE(ZT_WHO_SCREEN) TYPE  ZTTRF_ZPISYS_WHO_SCREEN
+*"----------------------------------------------------------------------
+
+
+  DATA: lo_pack          TYPE REF TO /scwm/cl_wm_packing,
+        lv_huexist       TYPE boolean,
+        ls_pick_hu       TYPE /scwm/s_rf_pick_hus,
+        lv_huident_v     TYPE /scwm/de_huident,
+        lv_hu_guid       TYPE /scwm/guid_hu,
+        ls_huhdr_del     TYPE /scwm/s_huhdr_int,
+        ls_first_confirm TYPE /scwm/s_rf_ordim_confirm.
+
+
+* need to check data and to define next step according to customizing
+  DATA: lv_line                TYPE i,
+        lv_restart_transaction TYPE xfeld VALUE IS INITIAL,
+        lv_lines               TYPE sy-tabix,
+        lv_lowchk_inv          TYPE /scwm/de_lowchk_inv,
+        lv_leave_trans         TYPE xfeld VALUE IS INITIAL,
+        lv_rvseq_not_allowed   TYPE xfeld VALUE IS INITIAL,
+        lv_fixpath             TYPE /scwm/de_fixpath,
+        oref                   TYPE REF TO /scwm/cl_wm_packing,
+        lv_applic              TYPE /scwm/de_applic,
+        lv_pres_prf            TYPE /scwm/de_pres_prf,
+        lv_ltrans              TYPE /scwm/de_ltrans,
+        lv_step                TYPE /scwm/de_step,
+        lv_fcode               TYPE /scwm/de_fcode,
+        lv_state               TYPE /scwm/de_state,
+        ls_who                 TYPE /scwm/who,
+        lt_ordim_o             TYPE /scwm/tt_ordim_o,
+        ls_ordim_o             TYPE /scwm/ordim_o,
+        ls_ordim_confirm       TYPE /scwm/s_rf_ordim_confirm,
+        ls_huhdr               TYPE /scwm/huhdr,
+        ls_huhdr_int           TYPE /scwm/s_huhdr_int,
+        lv_return              TYPE sy-subrc,
+        lv_flg_nest_hu         TYPE xfeld VALUE IS INITIAL,
+        lv_flg_mixed_hu        TYPE xfeld VALUE IS INITIAL,
+        lv_flg_huent_ok        TYPE xfeld VALUE IS INITIAL,
+        ls_ltap                TYPE /scwm/ltap,
+        lv_field_act           TYPE text60,
+        lt_valid_prf           TYPE /scwm/tt_valid_prf_ext,
+        ls_huheader            TYPE /scwm/s_huhdr_int,
+        ls_exc_tab             TYPE /scwm/s_rf_exc.
+  DATA: lv_postn_mngmnt TYPE /scwm/de_postn.
+  DATA: lv_tabix LIKE sy-tabix.
+  DATA: lv_stock TYPE /scwm/de_ser_stock.
+  DATA: lv_colsn    TYPE /scwm/de_rf_colsn,
+        lv_qty_numc TYPE /scwm/ltap_vsola.
+  DATA: lo_badi TYPE REF TO /scwm/ex_rf_prt_wo_hu.
+
+  DATA  lv_hu_verif TYPE /scwm/de_vlenr_verif.
+
+  DATA: lv_value       TYPE /scwm/de_attrib_value,
+        lv_dlv_closed  TYPE char1,
+        lv_no_split    TYPE char1,
+        lv_subrc       TYPE sy-subrc,
+        lv_buom        TYPE meins,
+        lv_puom        TYPE /scwm/de_puom,
+        lv_exccode_int TYPE /scwm/de_exccode_int,
+        lv_lines_total TYPE i,
+        lv_line_new    TYPE i,
+        ls_lagp        TYPE /scwm/lagp,
+        ls_exc         TYPE /scwm/s_rf_exc,
+        ls_texcoie     TYPE /scwm/texcoie,
+        ls_exccode     TYPE /scwm/s_iexccode,
+        lt_mat_uom     TYPE /scwm/tt_material_uom.
+  DATA: lo_excep TYPE REF TO data,
+        lo_log   TYPE REF TO data.
+
+  DATA: lv_data_entry TYPE /scwm/de_data_entry.
+*        lv_altme      TYPE string,
+*        lv_msg        TYPE string,
+*        lv_grammar    TYPE string,
+*        lv_altme_2    TYPE /scwm/de_rf_altme,
+**        lv_altme_3    TYPE /scwm/de_rf_altme,
+**        ls_screlm_pbv TYPE /scwm/s_rf_screlm_pbv,
+**        lt_listbox    TYPE /scwm/tt_rf_listbox.
+*  FIELD-SYMBOLS: <ls_listbox>  TYPE /scwm/s_rf_listbox,
+*                 <s_valid_prf> TYPE /scwm/s_valid_prf_ext.
+
+*  DATA  lv_picker_drv_repl TYPE xfeld.
+*  DATA  lv_execstep        TYPE /scwm/de_exec_step.
+*  DATA lv_flg_direct_stock TYPE xfeld.
+
+  BREAK-POINT ID /scwm/rf_picking.
+
+* Get actual fcode and line
+  lv_fcode = /scwm/cl_rf_bll_srvc=>get_fcode( ).
+  lv_line = /scwm/cl_rf_bll_srvc=>get_line( ).
+  lv_data_entry = /scwm/cl_rf_bll_srvc=>get_data_entry( ).
+
+      /scwm/cl_rf_bll_srvc=>set_scr_tabname(
+    iv_scr_tabname = '/SCWM/TT_RF_PICK_HUS' ).
+      lv_line = /scwm/cl_rf_bll_srvc=>get_line( ).
+      /scwm/cl_rf_bll_srvc=>set_line( iv_line = 1 ).
+* Set process mode to foreground as default
+  /scwm/cl_rf_bll_srvc=>set_prmod(
+                             /scwm/cl_rf_bll_srvc=>c_prmod_foreground ).
+
+* batch field is EAN128 enable, need to update back the
+* standard field
+  ordim_confirm-batch = ordim_confirm-rfbatch.
+  MODIFY tt_ordim_confirm FROM ordim_confirm INDEX lv_line
+    TRANSPORTING batch.
+
+* Count number of planned pick-HUs
+  DESCRIBE TABLE t_rf_pick_hus LINES lv_lines.
+  ordim_confirm-sumphu = lv_lines.
+
+  CASE lv_fcode.
+    WHEN 'ENTER'.
+
+      CONSTANTS: lc_smartform TYPE tdsfname VALUE 'ZEWM_PICKING_LABEL'.
+
+      DATA : lv_fm_name TYPE rs38l_fnam,
+             lv_printer TYPE rspopname,
+             ls_ctrl_op TYPE ssfctrlop,
+             ls_comp_op TYPE ssfcompop,
+             ls_return  TYPE ssfcrescl,
+             lv_msg     TYPE string.
+      DATA : lt_print_label TYPE TABLE OF zsrf_zpisys_who_screen.
+
+      DATA: lv_barcode TYPE /scwm/de_huident.
+      DATA: lv_street     TYPE ad_street,
+            lv_post_code1 TYPE ad_pstcd1,
+            lv_city1      TYPE ad_city1.
+
+      IF gv_nr_etichette <= 0.
+        MESSAGE 'Number of labels must be greater than 0' TYPE 'E'.
+        RETURN.
+      ENDIF.
+
+      " 1. Check at least one WT confirmed
+*      SELECT COUNT(*) FROM /scwm/ordim_c
+*        WHERE lgnum = @who-lgnum
+*          AND who   = @who-who
+*        INTO @DATA(lv_confirmed_count).
+*
+*      IF lv_confirmed_count = 0.
+*        MESSAGE 'Nessun task confermato' TYPE 'E'.
+*        RETURN.
+*      ENDIF.
+
+      " Get DLOC from confirmed tasks
+      SELECT SINGLE nlpla
+        FROM /scwm/ordim_o
+        WHERE lgnum = @resource-lgnum
+          AND who   = @who-who
+        INTO @DATA(lv_dloc).
+
+      " 4. Get HUIDENT for this WHO
+      "    Needed to build ZV_HUNR and ZV_LABELNR (barcode with concatenation)
+
+      READ TABLE t_rf_pick_hus INTO ls_pick_hu INDEX 1.
+      IF sy-subrc <> 0 OR ls_pick_hu-huident IS INITIAL.
+*        MESSAGE 'HU non trovata per questo ordine di magazzino' TYPE 'E'.
+        MESSAGE e034(zewm_rf_msg).
+        RETURN.
+      ENDIF.
+
+      DATA(lv_huident) = ls_pick_hu-huident.
+      SHIFT lv_huident LEFT DELETING LEADING '0'.
+
+      " Step 1: Get DOCID from PDO number via /SCDL/DB_PROCH_O
+      IF s_who_screen-pdo IS NOT INITIAL.
+        SELECT SINGLE docid
+          FROM /scdl/db_proch_o
+          WHERE docno = @( |{ s_who_screen-pdo ALPHA = IN }| )
+          INTO @DATA(lv_docid).
+      ENDIF.
+
+      " Step 2: Check /SCDL/DB_BPLOC for ADDRESSID
+      IF lv_docid IS NOT INITIAL.
+        SELECT SINGLE addressid
+          FROM /scdl/db_bploc
+          WHERE docid      = @lv_docid
+            AND party_role = 'STPRT'
+          INTO @DATA(lv_addressid).
+      ENDIF.
+
+      " Step 3: Get address based on ADDRESSID availability
+      IF lv_addressid IS NOT INITIAL.
+        " Path A: ADDRESSID exists in /SCDL/DB_BPLOC - use it directly
+        SELECT SINGLE street, post_code1, city1
+          FROM adrc
+          WHERE addrnumber = @lv_addressid
+          INTO (@lv_street, @lv_post_code1, @lv_city1).
+      ELSE.
+        " Path B: ADDRESSID is initial - get address via BUT020 using client number
+        IF s_who_screen-partyno IS NOT INITIAL.
+          SELECT SINGLE adrc~street, adrc~post_code1, adrc~city1
+            FROM but020
+            INNER JOIN adrc ON adrc~addrnumber = but020~addrnumber
+            WHERE but020~partner = @s_who_screen-partyno
+            INTO (@lv_street, @lv_post_code1, @lv_city1).
+        ENDIF.
+      ENDIF.
+
+      IF s_who_screen-partyno IS NOT INITIAL.
+        SELECT SINGLE title_let
+          FROM but000
+          WHERE partner = @s_who_screen-partyno
+          INTO @DATA(lv_title_let).
+      ENDIF.
+
+      DATA(lv_outb_del) = s_who_screen-pdo.
+      SHIFT lv_outb_del LEFT DELETING LEADING '0'.
+
+      s_who_screen-huident = lv_huident.  " base HU number (no concatenation yet)
+      s_who_screen-pdo = lv_outb_del.
+      s_who_screen-lgnum =  resource-lgnum.
+      s_who_screen-rsrc =  resource-rsrc.
+      s_who_screen-z_dats = sy-datum.
+      s_who_screen-nlpla  = lv_dloc.
+      s_who_screen-zb_colli_tot = |{ s_who_screen-zv_colli_tot DECIMALS = 0 }|.
+      s_who_screen-street     = lv_street.
+      s_who_screen-post_code1 = lv_post_code1.
+      s_who_screen-city1      = lv_city1.
+      s_who_screen-title_let  = lv_title_let.
+
+
+
+
+*  APPEND s_who_screen TO lt_print_label.
+* Stampa etichetta
+* Stampa Smartform*******************************************************************************
+      CALL FUNCTION 'SSF_FUNCTION_MODULE_NAME'
+        EXPORTING
+          formname           = lc_smartform
+        IMPORTING
+          fm_name            = lv_fm_name
+        EXCEPTIONS
+          no_form            = 1
+          no_function_module = 2
+          OTHERS             = 3.
+
+      IF sy-subrc <> 0.
+*        MESSAGE 'SmartForm non trovato/attivato' TYPE 'E'.  " message class
+        MESSAGE e035(zewm_rf_msg).
+      ENDIF.
+
+      CLEAR gt_certificazione.
+      DO gv_nr_etichette TIMES.
+
+        " --- 5a. Build barcode (ZV_LABELNR) per spec logic
+        IF gv_nr_etichette = 1.
+          s_who_screen-zv_barcode = lv_huident.
+        ELSE.
+          s_who_screen-zv_barcode = lv_huident &&
+*            |{ sy-index WIDTH = 2 ZERO = YES }|.
+  |{ sy-index WIDTH = 2 ALIGN = RIGHT PAD = '0' }|.
+        ENDIF.
+
+        s_who_screen-zv_labelnr = |{ sy-index }| && '/' && |{ gv_nr_etichette }|.
+        CLEAR lt_print_label.
+        APPEND s_who_screen TO lt_print_label.
+*
+        ls_ctrl_op-no_dialog   = abap_true.
+*        ls_ctrl_op-preview     = abap_false.
+        ls_ctrl_op-preview     = abap_true.
+        ls_comp_op-tdprinter   = 'PDFPRINTER'.
+        ls_comp_op-tddest      = 'ZPDF'.
+        ls_comp_op-tdcopies    = 1.
+        ls_comp_op-tdimmed     = abap_true.   " stampa immediata (non trattiene in spool)
+*  ls_comp_op-tddelete    = abap_true.   " cancella spool dopo stampa
+        ls_comp_op-tddelete    = abap_false.   " non cancella spool dopo stampa
+        ls_comp_op-tdfinal     = abap_true.   " chiude il job di stampa
+
+        CALL FUNCTION lv_fm_name
+          EXPORTING
+            control_parameters = ls_ctrl_op
+            output_options     = ls_comp_op
+            user_settings      = abap_false     "non usare impostazioni utente?
+          IMPORTING
+            job_output_info    = ls_return
+          TABLES
+            it_zrf_picking     = lt_print_label
+          EXCEPTIONS
+            formatting_error   = 1
+            internal_error     = 2
+            send_error         = 3
+            user_canceled      = 4
+            OTHERS             = 5.
+
+        CASE sy-subrc.
+          WHEN 0.
+            "OK
+*      aggiungi data_stampa
+*            MODIFY zrf_picking FROM TABLE lt_print_label.
+*            CLEAR gs_certificazione.
+*            gs_certificazione-lgnum      = resource-lgnum.
+*            gs_certificazione-zzportal   = s_who_screen-nlpla.
+*            gs_certificazione-zzlabel    = s_who_screen-zv_barcode.
+*            gs_certificazione-who        = who-who.
+*            gs_certificazione-docno      = s_who_screen-pdo.
+*            gs_certificazione-partyno    = s_who_screen-partyno.
+*            gs_certificazione-zzcertstat = ' '.
+**            CLEAR gt_certificazione.
+*            APPEND gs_certificazione TO gt_certificazione.
+*            MODIFY ztewm_certificaz FROM TABLE gt_certificazione.
+*            IF sy-subrc = 0.
+*              COMMIT WORK AND WAIT.
+*            ELSE.
+*              MESSAGE 'Errore Salvataggio dopo stampa' TYPE 'E'.
+*            ENDIF.
+            APPEND VALUE ztewm_certificaz(
+              lgnum      = resource-lgnum
+              zzportal   = s_who_screen-nlpla
+              zzlabel    = s_who_screen-zv_barcode
+              who        = who-who
+              docno      = s_who_screen-pdo
+              partyno    = s_who_screen-partyno
+              zzcertstat = space
+            ) TO gt_certificazione.
+
+
+
+*        gv_stampato = 'X'.
+
+          WHEN 1.
+            "Errore di formattazione (es. reference field mancante, overflow)
+*      MESSAGE 'Errore formattazione etichetta' INTO lv_msg.
+*            MESSAGE 'Errore formattazione etichetta' TYPE 'E'.
+            MESSAGE e036(zewm_rf_msg).
+            " Logga in SLG1 per debug
+*      perform_slog( iv_msg = lv_msg iv_type = 'E' ).
+
+          WHEN 2.
+            "Errore interno SmartForms
+*      MESSAGE 'Errore interno SmartForms' INTO lv_msg.
+*            MESSAGE 'Errore interno SmartForms' TYPE 'E'..
+            MESSAGE e037(zewm_rf_msg).
+*      perform_slog( iv_msg = lv_msg iv_type = 'E' ).
+
+          WHEN 3.
+            "Errore invio alla stampante
+*      MESSAGE 'Errore invio a stampante &1' INTO lv_msg.
+*            MESSAGE 'Errore invio a stampante &1' TYPE 'E'.
+            MESSAGE e038(zewm_rf_msg).
+*      perform_slog( iv_msg = lv_msg iv_type = 'E' ).
+
+          WHEN 4.
+            "Operatore ha cancellato (non dovrebbe accadere perchè si manda in stampa senza popup)
+*            MESSAGE 'Stampa annullata' TYPE 'E'.
+            MESSAGE e039(zewm_rf_msg).
+
+          WHEN OTHERS.
+*      MESSAGE 'Errore generico stampa' INTO lv_msg.
+*            MESSAGE 'Errore generico stampa' TYPE 'E'.
+            MESSAGE e040(zewm_rf_msg).
+*      perform_slog( iv_msg = lv_msg iv_type = 'E' ).
+
+        ENDCASE.
+      ENDDO.
+
+*      DELETE FROM ztewm_rf_rcv_sc6
+*        WHERE lgnum = @resource-lgnum
+*          AND rsrc  = @resource-rsrc
+*          AND who   = @who-who.
+
+*      DATA lt_sc6 TYPE STANDARD TABLE OF ztewm_rf_rcv_sc6 WITH EMPTY KEY.
+*
+*      LOOP AT gt_who_screen INTO DATA(ls_pkg)
+*        WHERE matnr        IS NOT INITIAL
+*          AND nr_packaging > 0.
+*
+*        APPEND VALUE ztewm_rf_rcv_sc6(
+*          mandt        = sy-mandt
+*          lgnum        = resource-lgnum
+*          rsrc         = resource-rsrc
+*          who          = who-who
+*          matnr        = ls_pkg-matnr
+*          nr_packaging = ls_pkg-nr_packaging
+*          maktx        = ls_pkg-maktx
+*        ) TO lt_sc6.
+*
+*      ENDLOOP.
+*
+*      IF lt_sc6 IS NOT INITIAL.
+*        INSERT ztewm_rf_rcv_sc6 FROM TABLE @lt_sc6.
+*      ENDIF.
+
+*
+*      "  Ruaj në ZTEWM_RF_RECOV
+*      DATA ls_recov TYPE ztewm_rf_recov.
+*
+*      MOVE-CORRESPONDING s_who_screen TO ls_recov.
+*      ls_recov-mandt        = sy-mandt.
+*      ls_recov-lgnum        = resource-lgnum.
+*      ls_recov-rsrc         = resource-rsrc.
+*      ls_recov-who          = who-who.
+*      ls_recov-nr_etichette = gv_nr_etichette.
+*      ls_recov-recover_scr  = 'ZPICK6'.
+*
+*      MODIFY ztewm_rf_recov FROM @ls_recov.
+
+*      COMMIT WORK AND WAIT.
+
+      " *** Save ALL labels at once AFTER the loop ***
+      IF gt_certificazione IS NOT INITIAL.
+        MODIFY ztewm_certificaz FROM TABLE gt_certificazione.
+        IF sy-subrc = 0.
+          COMMIT WORK AND WAIT.
+        ELSE.
+          ROLLBACK WORK.
+          MESSAGE 'Errore Salvataggio dopo stampa' TYPE 'E'.
+        ENDIF.
+      ENDIF.
+
+      CLEAR gt_who_screen.
+      DO 3 TIMES.
+        APPEND INITIAL LINE TO gt_who_screen.
+      ENDDO.
+    WHEN fcode_backf.
+      CALL METHOD /scwm/cl_rf_bll_srvc=>set_call_stack_optimizer
+        EXPORTING
+          iv_step = ' '.
+
+      CALL FUNCTION '/SCWM/RF_PICK_BACKF_CHECK'
+        CHANGING
+          tt_ordim_confirm = tt_ordim_confirm
+          lv_leave_trans   = lv_leave_trans.
+
+      IF NOT lv_leave_trans IS INITIAL.
+        CALL FUNCTION 'Z_EWM_RF_PICK_LEAVE_TRNS_CHCK'
+          CHANGING
+            who              = who
+            resource         = resource
+            ordim_confirm    = ordim_confirm
+            tt_ordim_confirm = tt_ordim_confirm.
+      ELSE.
+
+        " STEP 1: Delete all created HUs
+        CREATE OBJECT lo_pack.
+
+        LOOP AT t_rf_pick_hus INTO ls_pick_hu
+          WHERE huident IS NOT INITIAL.
+
+          " Type conversion for hu_existence_check
+          lv_huident_v = ls_pick_hu-huident.
+
+          CALL METHOD lo_pack->/scwm/if_pack_bas~hu_existence_check
+            EXPORTING
+              iv_hu    = lv_huident_v
+            RECEIVING
+              ev_found = lv_huexist.
+
+          IF lv_huexist = abap_true.
+
+            " Get HU header to retrieve the GUID for delete_hu
+            CLEAR ls_huhdr_del.
+            lo_pack->/scwm/if_pack_bas~get_hu(
+              EXPORTING
+                iv_huident = ls_pick_hu-huident
+              IMPORTING
+                es_huhdr   = ls_huhdr_del
+              EXCEPTIONS
+                not_found  = 1 ).
+
+            IF sy-subrc = 0.
+              lv_hu_guid = ls_huhdr_del-guid_hu.
+
+              lo_pack->/scwm/if_pack~delete_hu(
+                EXPORTING
+                  iv_hu  = lv_hu_guid
+                EXCEPTIONS
+                  OTHERS = 1 ).
+
+              IF sy-subrc <> 0.
+                MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+                           WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+              ENDIF.
+            ENDIF.
+
+          ENDIF.
+        ENDLOOP.
+
+        " Save/commit the deletions
+        lo_pack->/scwm/if_pack~save(
+          EXPORTING
+            iv_commit = 'X'
+            iv_wait   = 'X'
+          EXCEPTIONS
+            error     = 1
+            OTHERS    = 2 ).
+        IF sy-subrc <> 0.
+          /scwm/cl_pack_view=>msg_error( ).
+        ENDIF.
+
+        " Clear internal HU table and counters
+        REFRESH t_rf_pick_hus.
+        CLEAR: ordim_confirm-sumphu, gv_hunr.
+*      who-status = ' '.
+*      /scwm/cl_rf_bll_srvc=>set_fcode( 'INIT' ).
+*        " STEP 2: Restore pmat for ZPI2 screen
+*        READ TABLE tt_ordim_confirm INTO ls_first_confirm INDEX 1.
+*        IF sy-subrc = 0.
+*          PERFORM get_pack_mat_from_packspec
+*            USING    resource-lgnum
+*                     ls_first_confirm-who
+*                     ls_first_confirm-rdocid
+*            CHANGING nestpt-pmat.
+*        ENDIF.
+
+        lv_ltrans = /scwm/cl_rf_bll_srvc=>get_ltrans( ).
+        IF lv_ltrans = 'ZPISYS'.
+
+          CALL FUNCTION '/SCWM/RF_PICK_LEAVE_TRANS_CHCK'
+            CHANGING
+              who              = who
+              resource         = resource
+              ordim_confirm    = ordim_confirm
+              tt_ordim_confirm = tt_ordim_confirm.
+
+
+          " Pastro te gjitha stack entries
+          /scwm/cl_rf_bll_srvc=>init_call_stack_optimizer( ).
+          " Rinis transaksionin nga fillimi
+          /scwm/cl_rf_bll_srvc=>set_prmod( '1' ).
+          /scwm/cl_rf_bll_srvc=>set_fcode( 'INIT' ).
+          /scwm/cl_rf_bll_srvc=>set_call_stack_optimizer(
+       iv_step = 'PIMTTO' ).
+        ENDIF.
+
+      ENDIF.
+      EXIT.
+
+
+  ENDCASE.
+
+ENDFUNCTION.
