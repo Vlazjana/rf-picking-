@@ -1,0 +1,268 @@
+FUNCTION Z_EWM_RF_PICK_NAVIGPGDN_PGUP.
+*"----------------------------------------------------------------------
+*"*"Local Interface:
+*"  CHANGING
+*"     REFERENCE(TT_ORDIM_CONFIRM) TYPE  /SCWM/TT_RF_ORDIM_CONFIRM
+*"     REFERENCE(ORDIM_CONFIRM) TYPE  /SCWM/S_RF_ORDIM_CONFIRM
+*"     REFERENCE(RESOURCE) TYPE  /SCWM/S_RSRC
+*"     REFERENCE(SELECTION) TYPE  /SCWM/S_RF_SELECTION
+*"     REFERENCE(WHO) TYPE  /SCWM/S_WHO_INT
+*"     REFERENCE(WME_VERIF) TYPE  /SCWM/S_WME_VERIF
+*"----------------------------------------------------------------------
+
+  DATA: lv_fieldname TYPE fieldname,
+        lv_open_to   TYPE i,
+        lv_ltrans    TYPE /scwm/de_ltrans,
+        lv_step      TYPE /scwm/de_step,
+        lv_fcode     TYPE /scwm/de_fcode,
+        lv_line      TYPE i,
+        lv_index     TYPE i,
+        lv_count     TYPE i,
+        lv_flag_more TYPE xfeld VALUE 'X',
+        lv_shortcut  TYPE /scwm/de_shortcut.
+
+
+  DATA  ls_ordim_confirm   TYPE /scwm/s_rf_ordim_confirm.
+  DATA  lv_curr_nlpla      TYPE /scwm/de_rf_nlpla.
+  DATA  lv_nlpla      TYPE /scwm/de_rf_nlpla.
+  DATA  ls_comb_tanum     TYPE /scwm/s_rf_comb_tanum.
+
+  TYPES: BEGIN OF ls_nlpla,
+           nlpla TYPE /scwm/de_rf_nlpla,
+         END OF ls_nlpla.
+  STATICS st_nlpla TYPE TABLE OF ls_nlpla.
+  STATICS sv_lines TYPE i.
+
+  FIELD-SYMBOLS: <fs_ordim> TYPE /scwm/s_rf_ordim_confirm.
+
+  BREAK-POINT ID /scwm/rf_picking.
+
+  lv_ltrans = /scwm/cl_rf_bll_srvc=>get_ltrans( ).
+  lv_step = /scwm/cl_rf_bll_srvc=>get_step( ).
+  lv_fcode = /scwm/cl_rf_bll_srvc=>get_fcode( ).
+  lv_shortcut = /scwm/cl_rf_bll_srvc=>get_shortcut( ).
+  lv_line = /scwm/cl_rf_bll_srvc=>get_line( ).
+
+
+  DESCRIBE TABLE tt_ordim_confirm LINES lv_open_to.
+
+  CHECK lv_fcode = /scwm/cl_rf_bll_srvc=>c_fcode_next_pg OR
+        lv_fcode = /scwm/cl_rf_bll_srvc=>c_fcode_prev_pg.
+
+*  Logic for single scan when customizing is
+*  'B - Confirm Number of HUs - All Relevant Drops'
+*  pushbuttons PGUP/PGDN for navigating bewteen different
+*  destination bins
+*  IF lv_step = step_dest_mphu.
+**   Get the line of current WT
+*    IF lv_fcode = /scwm/cl_rf_bll_srvc=>c_fcode_next_pg.
+*      lv_index = lv_line - 1.
+*    ELSEIF lv_fcode = /scwm/cl_rf_bll_srvc=>c_fcode_prev_pg.
+*      lv_index = lv_line + 1.
+*    ENDIF.
+*
+*    READ TABLE tt_ordim_confirm INTO ls_ordim_confirm
+*                                INDEX lv_index.
+*    lv_curr_nlpla = ls_ordim_confirm-nlpla.
+**   customizing is 'A - Confirm Number of HUs - Last Drop Only'
+*    CHECK NOT ls_ordim_confirm-samdest IS INITIAL.
+*
+**   Prepare the unique table for destinations
+**   Because it is possible that the destination is not sorted
+*    IF sv_lines <> lv_open_to.
+*      CLEAR st_nlpla.
+*      LOOP AT tt_ordim_confirm INTO ls_ordim_confirm.
+*        READ TABLE st_nlpla TRANSPORTING NO FIELDS
+*             WITH KEY nlpla = ls_ordim_confirm-nlpla.
+*        IF sy-subrc IS NOT INITIAL.
+*          APPEND ls_ordim_confirm-nlpla TO st_nlpla.
+*        ENDIF.
+*      ENDLOOP.
+*
+*      sv_lines = lv_open_to.
+*    ENDIF.
+*    DESCRIBE TABLE st_nlpla LINES lv_count.
+*
+**   Get the table index of current destination in st_nlpla
+*    READ TABLE st_nlpla TRANSPORTING NO FIELDS
+*                        WITH KEY nlpla = lv_curr_nlpla.
+*    lv_index = sy-tabix.
+*
+*    IF lv_fcode = /scwm/cl_rf_bll_srvc=>c_fcode_next_pg.
+*      READ TABLE st_nlpla INTO lv_nlpla INDEX ( lv_index + 1 ).
+*      IF lv_count = lv_index + 1.
+*        lv_flag_more = ''.
+*      ENDIF.
+*    ELSEIF lv_fcode = /scwm/cl_rf_bll_srvc=>c_fcode_prev_pg.
+*      READ TABLE st_nlpla INTO lv_nlpla INDEX ( lv_index - 1 ).
+*    ENDIF.
+*
+**   GET the line of next WT
+*    READ TABLE tt_ordim_confirm ASSIGNING <fs_ordim>
+*                                WITH KEY nlpla = lv_nlpla.
+*    lv_line = sy-tabix.
+*    IF lv_flag_more = ''.
+*      <fs_ordim>-more = ''.
+*    ENDIF.
+*    /scwm/cl_rf_bll_srvc=>set_line( lv_line ).
+*  ENDIF.
+
+* Logic for combined picking
+* pushbuttons PGUP/PGDN for navigating bewteen different
+* combination group
+  DATA: lv_flg_prev    TYPE boolean,
+        lv_tanum       TYPE /scwm/de_rf_tanum,
+        lv_is_combined TYPE boolean.
+
+  CALL METHOD /scwm/cl_rf_comb_pick=>get_is_combined
+    IMPORTING
+      ev_is_combined = lv_is_combined.
+
+  IF lv_step = step_pick_cpmt OR
+    ( lv_step = step_source_mtto AND ordim_confirm-uncomb = abap_false AND lv_is_combined = abap_true ) OR
+    lv_step = step_source_blcp OR
+    ( lv_step = step_source_blmt AND ordim_confirm-uncomb = abap_false AND lv_is_combined = abap_true ).
+    IF lv_fcode = /scwm/cl_rf_bll_srvc=>c_fcode_prev_pg.
+      lv_flg_prev = abap_true.
+    ENDIF.
+
+    CALL METHOD /scwm/cl_rf_comb_pick=>get_next_tanum
+      EXPORTING
+        ordim_confirm    = ordim_confirm
+        tt_ordim_confirm = tt_ordim_confirm
+        is_previous      = lv_flg_prev
+      IMPORTING
+        ev_next_tanum    = lv_tanum.
+
+    READ TABLE tt_ordim_confirm ASSIGNING <fs_ordim>
+                                WITH KEY tanum = lv_tanum.
+    IF sy-subrc = 0 .
+      lv_line = sy-tabix.
+      /scwm/cl_rf_bll_srvc=>set_line( lv_line ).
+    ENDIF.
+  ENDIF.
+
+  CASE lv_open_to.
+
+    WHEN 0.
+
+      /scwm/cl_rf_bll_srvc=>set_prmod(
+                         /scwm/cl_rf_bll_srvc=>c_prmod_background ).
+
+      IF   lv_step = step_source_mtto OR
+           lv_step = step_pick_cpmt   OR
+           lv_step = step_source_huto OR
+           lv_step = step_source_blmt OR
+           lv_step = step_source_blcp OR
+           lv_step = step_source_blhu.
+
+* Re-read the WHO. Analyze the first destination TO
+* CALL WO to get WO + TO data
+        CALL FUNCTION '/SCWM/RF_PICK_WHO_TO_REFRESH'
+          EXPORTING
+            iv_lgnum         = resource-lgnum
+            iv_who           = ordim_confirm-who
+          CHANGING
+            ordim_confirm    = ordim_confirm
+            tt_ordim_confirm = tt_ordim_confirm
+            who              = who.
+
+        CALL FUNCTION '/SCWM/RF_PICK_SET_STATE'
+          CHANGING
+            resource      = resource
+            ordim_confirm = ordim_confirm.
+
+        CALL FUNCTION '/SCWM/RF_PICK_SET_FCODE'
+          CHANGING
+            resource         = resource
+            ordim_confirm    = ordim_confirm
+            tt_ordim_confirm = tt_ordim_confirm.
+
+      ELSEIF lv_step = step_dest_plhu OR
+             lv_step = step_dest_plmt.
+*     Step destination finished go to initial tranasction screen.
+
+        CASE lv_ltrans.
+
+          WHEN ltrans_pick_by_hu OR
+               ltrans_pick_by_who OR
+               ltrans_pick_by_system.
+* 1. In user guided transaction HU/WHO return to initial selection
+*    screen.
+* 2. In system guided transaction return to initial step.
+            /scwm/cl_rf_bll_srvc=>set_prmod(
+                        /scwm/cl_rf_bll_srvc=>c_prmod_background ).
+            /scwm/cl_rf_bll_srvc=>set_fcode(
+                      /scwm/cl_rf_bll_srvc=>c_fcode_compl_ltrans ).
+
+          WHEN ltrans_pick_by_queue OR
+               ltrans_pick_by_whr.
+*         3. In system guided by queue pass the queue and skip first
+*         selection screen. Need to see how we change the flow to go
+*         to selection directly skipping initial screen. Currently like
+*         other user guided options.
+*         4. In User guided by WHR check there are no more open TOs and
+*         return to initial screen. If there are still open TOs return
+*         to transaction skip first selection screen. Need to see how we
+*         change the flow to go to selection directly skipping initial
+*         screen. Currently like other user guided options
+            /scwm/cl_rf_bll_srvc=>set_prmod(
+                        /scwm/cl_rf_bll_srvc=>c_prmod_background ).
+            /scwm/cl_rf_bll_srvc=>set_fcode( fcode_skip_slct_scr ).
+
+        ENDCASE.
+      ENDIF.
+* Set the state for that TO.
+* Set the Fcode to go to relevant step(PIPLHU, PIPLMT).
+    WHEN OTHERS.
+*     Set Presentation mode
+      /scwm/cl_rf_bll_srvc=>set_prmod(
+                   /scwm/cl_rf_bll_srvc=>c_prmod_foreground ).
+*     Check the next WT choosed by PGUP-PGDN for REC
+      READ TABLE tt_ordim_confirm INTO ls_ordim_confirm
+          INDEX lv_line TRANSPORTING tanum.
+      CALL FUNCTION '/SCWM/REC_WT_CHECK'
+        EXPORTING
+          iv_tanum            = ls_ordim_confirm-tanum
+        EXCEPTIONS
+          internal_error      = 1
+          rec_area_is_engaged = 2
+          OTHERS              = 3.
+      IF sy-subrc <> 0.
+        MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+          WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+      ENDIF.
+
+*     Get next TO data.
+      READ TABLE tt_ordim_confirm INTO ordim_confirm
+           INDEX lv_line.
+
+
+*     Fill container for application specific verification
+      CALL FUNCTION '/SCWM/RF_FILL_WME_VERIF'
+        EXPORTING
+          iv_lgnum     = ordim_confirm-lgnum
+          iv_procty    = ordim_confirm-procty
+          iv_trart     = ordim_confirm-trart
+          iv_act_type  = ordim_confirm-act_type
+          iv_aarea     = ordim_confirm-aarea
+        IMPORTING
+          es_wme_verif = wme_verif.
+
+      CALL METHOD /scwm/cl_rf_bll_srvc=>set_rebuild_vrf.
+
+      CALL FUNCTION '/SCWM/RF_PICK_SET_STATE'
+        CHANGING
+          resource      = resource
+          ordim_confirm = ordim_confirm.
+
+      CALL FUNCTION '/SCWM/RF_PICK_SET_FCODE'
+        CHANGING
+          resource         = resource
+          ordim_confirm    = ordim_confirm
+          tt_ordim_confirm = tt_ordim_confirm.
+
+  ENDCASE.
+*/scwm/cl_rf_bll_srvc=>set_fcode( '' ).
+
+ENDFUNCTION.
