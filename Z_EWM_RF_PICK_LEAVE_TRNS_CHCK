@@ -1,0 +1,150 @@
+FUNCTION Z_EWM_RF_PICK_LEAVE_TRNS_CHCK.
+*"----------------------------------------------------------------------
+*"*"Local Interface:
+*"  CHANGING
+*"     REFERENCE(WHO) TYPE  /SCWM/S_WHO_INT
+*"     REFERENCE(RESOURCE) TYPE  /SCWM/S_RSRC
+*"     REFERENCE(ORDIM_CONFIRM) TYPE  /SCWM/S_RF_ORDIM_CONFIRM
+*"     REFERENCE(TT_ORDIM_CONFIRM) TYPE  /SCWM/TT_RF_ORDIM_CONFIRM
+*"----------------------------------------------------------------------
+
+* need to check data and to define next step according to customizing
+  DATA: lt_ordim_o  TYPE /scwm/tt_ordim_o,
+        lt_ordim_c  TYPE /scwm/tt_ordim_c,
+        ls_ordim_o  TYPE /scwm/ordim_o,
+        ls_who      TYPE /scwm/s_who_int,
+        lt_who      TYPE /scwm/tt_who_int.
+
+  DATA: lv_open_puts TYPE c,
+        lv_restart_transaction TYPE xfeld VALUE IS INITIAL,
+        lv_next TYPE xfeld VALUE IS INITIAL,
+        lv_shortcut TYPE /scwm/de_shortcut,
+        lv_step TYPE /scwm/de_step,
+        ls_sel_empty TYPE /scwm/s_rf_selection.
+
+  DATA: lv_queue TYPE /scwm/de_queue.
+
+  DATA: ls_wme_verif TYPE /scwm/s_wme_verif.
+
+  BREAK-POINT ID /scwm/rf_picking.
+
+* Get WO data
+  TRY.
+      CALL FUNCTION '/SCWM/WHO_SELECT'
+        EXPORTING
+          iv_to      = gc_xfeld
+          iv_lgnum   = resource-lgnum
+          iv_who     = who-who
+        IMPORTING
+          es_who     = ls_who
+          et_ordim_o = lt_ordim_o
+          et_ordim_c = lt_ordim_c.
+    CATCH /scwm/cx_core.
+  ENDTRY.
+
+  IF ls_who IS INITIAL.
+*    MESSAGE e030 with ordim_confirm-who. "JQ
+  ELSE.
+    IF lt_ordim_c[] IS INITIAL.
+*   No TO was confirmed WO was not started.
+*   Unassign WO and clearing user and started_at fields.
+      REFRESH lt_who.
+      APPEND who TO lt_who.
+      CALL FUNCTION '/SCWM/RSRC_WHO_UNASSIGN'
+        EXPORTING
+          iv_clear_start    = gc_xfeld
+          is_rsrc           = resource
+          it_who            = lt_who
+        EXCEPTIONS
+          error_message = 1
+          others        = 2.
+      IF sy-subrc <> 0.
+        MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+                WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+      ENDIF.
+
+*     Set process mode to background
+      /scwm/cl_rf_bll_srvc=>set_prmod(
+                             /scwm/cl_rf_bll_srvc=>c_prmod_background ).
+*     Set fcode to return to the menu
+      /scwm/cl_rf_bll_srvc=>set_fcode(
+                       /scwm/cl_rf_bll_srvc=>c_fcode_leave ).
+
+      CLEAR lv_queue.
+      SET PARAMETER ID '/SCWM/WKSYSQ_QUEUE' FIELD lv_queue.
+      DATA   lv_einame TYPE c LENGTh 60.
+      CONCATENATE '/SCWM/' sy-uname 'WKSYSQ' INTO lv_einame.
+      EXPORT lv_queue FROM lv_queue TO MEMORY ID lv_einame.
+
+*     Requesting RF Framework to release locks to cover cases where
+*     locking of WO was done before calling RF picking transaction.
+      /scwm/cl_rf_bll_srvc=>set_flg_dequeue_all( ).
+
+    ELSE.
+*     If we have open TO's from resource to destination we first
+*       ask to complete them
+      CLEAR lv_open_puts.
+      LOOP AT lt_ordim_o INTO ls_ordim_o WHERE srsrc IS NOT INITIAL.
+        lv_open_puts = 'X'.
+        EXIT.
+      ENDLOOP.
+
+      lv_step = /scwm/cl_rf_bll_srvc=>get_step( ).
+      IF ( ( lv_open_puts = 'X' ) and
+           ( lv_step = step_source_mtto OR
+             lv_step = step_pick_cpmt   OR
+             lv_step = step_source_huto OR
+             lv_step = step_source_blmt OR
+             lv_step = step_source_blcp OR
+             lv_step = step_source_blhu OR
+             lv_step = step_pick_huin   OR
+             lv_step = step_pbv_cpmt OR
+             lv_step = step_pbv_blcp OR
+             lv_step = 'PVMTTO' OR
+             lv_step = 'PVHUTO' OR
+             lv_step = 'PVBLMT' OR
+             lv_step = 'PVBLHU' OR
+             lv_step = 'PVHUIN' OR
+             lv_step = 'ZPICK6' OR
+             lv_step = 'ZPICK4' ) ).
+      .
+        IF /scwm/cl_rf_dynpro_srvc=>display_message(
+              iv_msgid           = gc_picking_msgid
+              iv_msgty           = 'Q' "gc_msgty_warning
+              iv_msgno           = '075' ) =
+           /scwm/cl_rf_bll_srvc=>c_answer_yes.
+
+          CLEAR lv_shortcut.
+          /scwm/cl_rf_bll_srvc=>set_shortcut( lv_shortcut ).
+          /scwm/cl_rf_bll_srvc=>set_fcode( fcode_next ).
+
+          gv_dest_before_quit = 'X'.
+          lv_next = 'X'.
+          CALL FUNCTION '/SCWM/RF_PICK_NAVIGATION'
+            EXPORTING
+              iv_restart_transaction = lv_restart_transaction
+              iv_next                = lv_next
+            CHANGING
+              tt_ordim_confirm       = tt_ordim_confirm
+              ordim_confirm          = ordim_confirm
+              resource               = resource
+              selection              = ls_sel_empty   "always empty
+              who                    = who
+              wme_verif              = ls_wme_verif.
+
+          EXIT.
+        ENDIF.
+      ENDIF.
+
+*     WO started - split WO?
+      CALL FUNCTION '/SCWM/RF_PICK_WHO_SPLIT'
+        EXPORTING
+          it_ordim_o = lt_ordim_o
+        CHANGING
+          ordim_confirm    = ordim_confirm
+          tt_ordim_confirm = tt_ordim_confirm.
+
+    ENDIF.
+  ENDIF.
+
+ENDFUNCTION.
