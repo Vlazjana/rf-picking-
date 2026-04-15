@@ -1,0 +1,378 @@
+FUNCTION z_ewm_rf_pick_pibsys_initial.
+*"----------------------------------------------------------------------
+*"*"Local Interface:
+*"  CHANGING
+*"     REFERENCE(RESOURCE) TYPE  /SCWM/S_RSRC OPTIONAL
+*"     REFERENCE(ZT_WHO_SCREEN) TYPE  ZTTRF_ZPISYS_WHO_SCREEN OPTIONAL
+*"     REFERENCE(S_WHO_SCREEN) TYPE  ZSRF_ZPISYS_WHO_SCREEN OPTIONAL
+*"     REFERENCE(NESTPT) TYPE  /SCWM/S_RF_NESTED OPTIONAL
+*"----------------------------------------------------------------------
+
+  " Resource
+  DATA: ls_resource TYPE /scwm/rsrc,
+        ls_rsrc     TYPE /scwm/rsrc,
+        ls_rsrc_tmp TYPE /scwm/rsrc.
+  " WHO list from DB
+  DATA lt_who_list TYPE TABLE OF /scwm/who.
+  DATA(lv_step)  = /scwm/cl_rf_bll_srvc=>get_step( ).
+
+  BREAK-POINT ID /scwm/rf_picking.
+  /scwm/cl_rf_bll_srvc=>set_flg_stack( iv_flg_stack = ' ' ).
+  /scwm/cl_rf_bll_srvc=>init_call_stack_optimizer( ).
+* Get lgnum from resource memory since resource may be cleared after SKWO
+  CALL FUNCTION '/SCWM/RSRC_RESOURCE_MEMORY'
+    EXPORTING
+      iv_uname = sy-uname
+    CHANGING
+      cs_rsrc  = ls_rsrc_tmp.
+
+  IF resource-lgnum IS NOT INITIAL.
+    CALL METHOD /scwm/cl_tm=>cleanup( ).
+  ENDIF.
+
+  DATA(lv_fcode) = /scwm/cl_rf_bll_srvc=>get_fcode( ).
+
+  "Initialise RF screen
+  PERFORM init_screen
+    CHANGING zt_who_screen
+             s_who_screen.
+  REFRESH zt_who_screen.
+  CLEAR :resource,ls_resource,ls_rsrc,zt_who_screen.
+  " Resolve operator resource
+  PERFORM resolve_resource
+    USING    resource
+    CHANGING ls_resource
+             ls_rsrc.
+
+  MOVE-CORRESPONDING ls_rsrc TO resource.
+
+  DATA: ls_ctx   TYPE zss_ewm_rf_recov_ctx,
+        lv_found TYPE abap_bool.
+
+  PERFORM load_recov_ctx
+    USING    ls_resource-lgnum
+    CHANGING ls_ctx
+             lv_found.
+
+  IF lv_found = abap_true.
+
+    SELECT SINGLE who
+      FROM /scwm/who
+      INTO @DATA(lv_who_ok)
+      WHERE lgnum  = @ls_resource-lgnum
+        AND rsrc   = @ls_resource-rsrc
+        AND who    = @ls_ctx-who-who
+        AND status = @wmegc_wo_in_process.
+
+    IF sy-subrc = 0.
+
+      gv_selected_who = ls_ctx-who-who.
+      s_who_screen    = ls_ctx-s_who_screen.
+
+      IF s_who_screen-who IS INITIAL.
+        s_who_screen-who = ls_ctx-who-who.
+      ENDIF.
+
+      /scwm/cl_rf_bll_srvc=>set_prmod( '1' ).
+      /scwm/cl_rf_bll_srvc=>set_fcode( 'ZRECOV' ).
+      RETURN.
+
+    ELSE.
+      PERFORM delete_recov_ctx
+        USING ls_resource-lgnum.
+    ENDIF.
+  ENDIF.
+
+
+
+
+
+*DATA: lv_work_who TYPE /scwm/de_who.
+*GET PARAMETER ID 'ZPISYS_WORK_WHO' FIELD lv_work_who.
+*
+*CALL FUNCTION 'CONVERSION_EXIT_ALPHA_OUTPUT'
+*  EXPORTING
+*    input  = lv_work_who
+*  IMPORTING
+*    output = lv_work_who.
+*IF lv_work_who IS NOT INITIAL  AND lv_work_who <> '0000000000'..
+*  CLEAR lv_work_who.
+*  SET PARAMETER ID 'ZPISYS_WORK_WHO' FIELD space.
+** vazhdo me listen normalisht (mos RETURN)
+*ELSE.
+
+  SELECT SINGLE *
+    FROM /scwm/who
+    WHERE lgnum = @ls_resource-lgnum
+      AND rsrc  = @ls_resource-rsrc
+      AND status = @wmegc_wo_in_process  " <- Status D
+    INTO @DATA(ls_who_pending).
+
+  IF sy-subrc = 0.
+    DATA(lv_recovered) = abap_true.
+
+* Ka WHO pending - shko background direkt
+    gv_selected_who = ls_who_pending-who.
+
+*  IMPORT s_who_screen FROM MEMORY ID 'ZPISYS_S_WHO_SCREEN'.
+
+
+  ENDIF.
+*ENDIF.
+
+
+*DATA: lv_work_who TYPE /scwm/de_who.
+*GET PARAMETER ID 'ZPISYS_WORK_WHO' FIELD lv_work_who.
+*
+*CALL FUNCTION 'CONVERSION_EXIT_ALPHA_OUTPUT'
+*  EXPORTING
+*    input  = lv_work_who
+*  IMPORTING
+*    output = lv_work_who.
+*IF lv_work_who IS NOT INITIAL  AND lv_work_who <> '0000000000'..
+*  CLEAR lv_work_who.
+*  SET PARAMETER ID 'ZPISYS_WORK_WHO' FIELD space.
+*
+** vazhdo me listen normalisht (mos RETURN)
+*
+*ELSE.
+
+  /scwm/cl_rf_bll_srvc=>set_prmod( '2' ).
+*  SELECT SINGLE *
+*    FROM /scwm/who
+*    WHERE lgnum = @ls_resource-lgnum
+*      AND rsrc  = @ls_resource-rsrc
+*      AND status = @wmegc_wo_in_process  " <- Status D
+*    INTO @DATA(ls_who_pending).
+*  IF sy-subrc = 0.
+*      gv_selected_who = ls_who_pending-who.
+*    /scwm/cl_rf_bll_srvc=>set_prmod( '1' ).
+*    /scwm/cl_rf_bll_srvc=>set_fcode( 'ENTER' ).
+*    return.
+*  ENDIF.
+
+  IF lv_recovered IS INITIAL.
+
+    PERFORM get_who_list
+      TABLES lt_who_list
+      USING    ls_resource.
+  ELSE.
+
+    PERFORM get_who_list_RECOVER
+      TABLES lt_who_list
+      USING    ls_resource gv_selected_who.
+
+
+  ENDIF.
+
+  IMPORT gt_skipped_wos FROM MEMORY ID 'Z_SKIP_WO'.
+  FREE MEMORY ID 'Z_SKIP_WO'.
+
+  DATA(lo_skip) = /scwm/cl_rf_pick_exc_skip_wo=>get_instance(
+                    iv_lgnum = ls_rsrc_tmp-lgnum ).
+  DATA(lt_skipped) = lo_skip->get_skipped_wos( ).
+
+
+
+  IF gt_skipped_wos IS NOT INITIAL.
+*      CLEAR: s_who_screen, gv_selected_who.
+    LOOP AT gt_skipped_wos ASSIGNING FIELD-SYMBOL(<ls_skip>).
+      DATA(lv_who) = |{ <ls_skip>-who ALPHA = IN }|.
+      DELETE lt_who_list WHERE who = lv_who.
+    ENDLOOP.
+
+  ENDIF.
+
+
+  MOVE-CORRESPONDING ls_resource TO resource.
+  IF lt_who_list IS INITIAL.
+    MESSAGE e022(zewm_rf_msg).
+    RETURN.
+  ENDIF.
+
+*  Collect all WHO numbers
+  DATA(lt_who_range) = VALUE rseloption( FOR ls_who IN lt_who_list
+    ( sign = 'I' option = 'EQ' low = CONV #( ls_who-who ) ) ).
+
+* all ORDIM_O records
+  SELECT lgnum, who, rdocid, sloc_type, vsola
+    FROM /scwm/ordim_o
+    WHERE lgnum = @ls_resource-lgnum
+      AND who IN @lt_who_range
+    INTO TABLE @DATA(lt_all_ordim_o).
+
+* lookup table for first RDOCID per WHO
+  DATA(lt_who_rdocid) = lt_all_ordim_o.
+  SORT lt_who_rdocid BY lgnum who.
+  DELETE ADJACENT DUPLICATES FROM lt_who_rdocid COMPARING lgnum who.
+
+* Collect unique RDOCIDs
+  DATA(lt_rdocid_range) = VALUE rseloption( FOR ls_rdoc IN lt_who_rdocid
+    ( sign = 'I' option = 'EQ' low = CONV #( ls_rdoc-rdocid ) ) ).
+
+  SORT lt_rdocid_range BY low.
+  DELETE ADJACENT DUPLICATES FROM lt_rdocid_range COMPARING low.
+
+  SELECT docid, docno
+    FROM /scdl/db_proch_o
+    WHERE docid IN @lt_rdocid_range
+    INTO TABLE @DATA(lt_proch).
+
+  SORT lt_proch BY docid.
+
+* fetch party locations
+  SELECT docid, partyno
+    FROM /scdl/db_bploc
+    WHERE docid IN @lt_rdocid_range
+      AND party_role = 'STPRT'
+    INTO TABLE @DATA(lt_bploc).
+
+  SORT lt_bploc BY docid.
+
+* Collect partner numbers for BUT000 lookup
+  DATA(lt_partner_range) = VALUE rseloption( FOR ls_bp IN lt_bploc
+    WHERE ( partyno IS NOT INITIAL )
+    ( sign = 'I' option = 'EQ' low = CONV #( ls_bp-partyno ) ) ).
+
+  SORT lt_partner_range BY low.
+  DELETE ADJACENT DUPLICATES FROM lt_partner_range COMPARING low.
+
+  IF lt_partner_range IS NOT INITIAL.
+    SELECT partner, name_org1
+      FROM but000
+      WHERE partner IN @lt_partner_range
+      INTO TABLE @DATA(lt_but000).
+
+    SORT lt_but000 BY partner.
+  ENDIF.
+
+*calculate R_STOPS and C_PACKAGES
+  SELECT who,
+         COUNT(*) AS r_stops,
+         SUM( vsola ) AS c_packages
+    FROM /scwm/ordim_o
+    WHERE lgnum     = @ls_resource-lgnum
+      AND who IN @lt_who_range
+      AND sloc_type = 'B'
+    GROUP BY who
+    INTO TABLE @DATA(lt_stops_packages).
+
+  SORT lt_stops_packages BY who.
+
+*  Pedana a perdere per WHO
+  SELECT who,
+         SUM( volum ) AS sum_volum
+    FROM /scwm/ordim_o
+    WHERE lgnum = @ls_resource-lgnum
+      AND who IN @lt_who_range
+    GROUP BY who
+    INTO TABLE @DATA(lt_who_volum).
+
+  SORT lt_who_volum BY who.
+
+  LOOP AT lt_who_list ASSIGNING FIELD-SYMBOL(<ls_who>).
+
+    APPEND INITIAL LINE TO zt_who_screen ASSIGNING FIELD-SYMBOL(<ls_who_screen>).
+    <ls_who_screen>-who = <ls_who>-who.
+
+    READ TABLE lt_who_rdocid ASSIGNING FIELD-SYMBOL(<ls_first_ordim>)
+      WITH KEY lgnum = ls_resource-lgnum who = <ls_who>-who
+      BINARY SEARCH.
+
+    IF sy-subrc = 0.
+
+*      PERFORM get_pack_mat_from_packspec
+*        USING ls_resource-lgnum
+*               <ls_who>-who
+*               <ls_first_ordim>-rdocid
+*        CHANGING nestpt-pmat.
+
+      READ TABLE lt_proch ASSIGNING FIELD-SYMBOL(<ls_proch>)
+        WITH KEY docid = <ls_first_ordim>-rdocid
+        BINARY SEARCH.
+      IF sy-subrc = 0.
+        <ls_who_screen>-pdo = <ls_proch>-docno.
+      ENDIF.
+
+      READ TABLE lt_bploc ASSIGNING FIELD-SYMBOL(<ls_bploc>)
+        WITH KEY docid = <ls_first_ordim>-rdocid
+        BINARY SEARCH.
+      IF sy-subrc = 0.
+        <ls_who_screen>-partyno = <ls_bploc>-partyno.
+
+        IF <ls_who_screen>-partyno IS NOT INITIAL.
+          READ TABLE lt_but000 ASSIGNING FIELD-SYMBOL(<ls_but000>)
+            WITH KEY partner = <ls_who_screen>-partyno
+            BINARY SEARCH.
+          IF sy-subrc = 0.
+            <ls_who_screen>-name_org1 = <ls_but000>-name_org1.
+          ENDIF.
+        ENDIF.
+      ENDIF.
+    ENDIF.
+
+    READ TABLE lt_stops_packages ASSIGNING FIELD-SYMBOL(<ls_stops>)
+      WITH KEY who = <ls_who>-who
+      BINARY SEARCH.
+    IF sy-subrc = 0.
+      <ls_who_screen>-r_stops = <ls_stops>-r_stops.
+      <ls_who_screen>-c_packages = <ls_stops>-c_packages.
+    ENDIF.
+
+    CONSTANTS: lc_euro_pallet_m3 TYPE p DECIMALS 1 VALUE '1.3'.
+
+    READ TABLE lt_who_volum ASSIGNING FIELD-SYMBOL(<ls_volum>)
+      WITH KEY who = <ls_who>-who
+      BINARY SEARCH.
+    IF sy-subrc = 0 AND <ls_volum>-sum_volum > 0.
+      <ls_who_screen>-disp_pallet = ceil( <ls_volum>-sum_volum / lc_euro_pallet_m3 ).
+    ELSE.
+      <ls_who_screen>-disp_pallet = 0.
+    ENDIF.
+
+  ENDLOOP.
+
+* Find first index for operator assigned WHO
+  DATA(lv_first_index) = 1.
+
+  IF gv_selected_who IS NOT INITIAL.
+    READ TABLE zt_who_screen TRANSPORTING NO FIELDS
+      WITH KEY who = gv_selected_who.
+    IF sy-subrc = 0.
+      lv_first_index = sy-tabix.
+    ENDIF.
+    CLEAR gv_selected_who.
+  ELSE.
+    IF s_who_screen-who IS NOT INITIAL.
+      READ TABLE zt_who_screen TRANSPORTING NO FIELDS
+        WITH KEY who = s_who_screen-who.
+      IF sy-subrc = 0.
+        lv_first_index = sy-tabix.
+      ENDIF.
+    ENDIF.
+  ENDIF.
+
+  CALL METHOD /scwm/cl_rf_bll_srvc=>set_scr_tabname
+    EXPORTING
+      iv_scr_tabname = 'ZTTRF_ZPISYS_WHO_SCREEN'.
+
+  CALL METHOD /scwm/cl_rf_bll_srvc=>set_line
+    EXPORTING
+      iv_line = lv_first_index.
+
+
+  IF lv_recovered IS NOT INITIAL.
+
+    READ TABLE zt_who_screen INTO s_who_screen INDEX 1.
+
+    /scwm/cl_rf_bll_srvc=>set_prmod( '1' ).
+    /scwm/cl_rf_bll_srvc=>set_fcode( 'ENTER' ).
+  ELSE.
+
+    CLEAR s_who_screen-who.
+  ENDIF.
+
+*  FREE MEMORY ID 'Z_SKIP_WO'.
+*  CLEAR gt_skipped_wos.
+
+ENDFUNCTION.
