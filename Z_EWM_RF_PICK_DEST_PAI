@@ -1,0 +1,267 @@
+FUNCTION z_ewm_rf_pick_dest_pai .
+*"----------------------------------------------------------------------
+*"*"Local Interface:
+*"  CHANGING
+*"     REFERENCE(SELECTION) TYPE  /SCWM/S_RF_SELECTION OPTIONAL
+*"     REFERENCE(RESOURCE) TYPE  /SCWM/S_RSRC OPTIONAL
+*"     REFERENCE(WHO) TYPE  /SCWM/S_WHO_INT OPTIONAL
+*"     REFERENCE(ORDIM_CONFIRM) TYPE  /SCWM/S_RF_ORDIM_CONFIRM OPTIONAL
+*"     REFERENCE(TT_ORDIM_CONFIRM) TYPE  /SCWM/TT_RF_ORDIM_CONFIRM
+*"       OPTIONAL
+*"     REFERENCE(TT_NESTED_HU) TYPE  /SCWM/TT_RF_NESTED_HU OPTIONAL
+*"     REFERENCE(T_RF_PICK_HUS) TYPE  /SCWM/TT_RF_PICK_HUS OPTIONAL
+*"     REFERENCE(CT_SERNR) TYPE  /SCWM/TT_RF_SERNR OPTIONAL
+*"     REFERENCE(CT_SERNR_DIFF) TYPE  /SCWM/TT_RF_SERNR OPTIONAL
+*"     REFERENCE(CS_SN) TYPE  /SCWM/S_RF_SN OPTIONAL
+*"     REFERENCE(WME_VERIF) TYPE  /SCWM/S_WME_VERIF OPTIONAL
+*"     REFERENCE(CT_SERNR_LSCK) TYPE  /SCWM/TT_RF_SERNR OPTIONAL
+*"     REFERENCE(NESTPT) TYPE  /SCWM/S_RF_NESTED OPTIONAL
+*"     REFERENCE(S_WHO_SCREEN) TYPE  ZSRF_ZPISYS_WHO_SCREEN OPTIONAL
+*"     REFERENCE(ZT_WHO_SCREEN) TYPE  ZTTRF_ZPISYS_WHO_SCREEN OPTIONAL
+*"     REFERENCE(NESTED_HU) TYPE  /SCWM/S_RF_NESTED_HU OPTIONAL
+*"----------------------------------------------------------------------
+
+  " Local variables
+  DATA:
+    lv_fcode               TYPE /scwm/de_fcode,
+    lv_zzing_outb          TYPE zzingoutb,
+    lv_leave_trans         TYPE xfeld VALUE IS INITIAL,
+    lv_docid               TYPE /scdl/dl_docid,
+    lv_zzing_factor        TYPE zzingoutb,
+    lv_step                TYPE /scwm/de_step,
+    lv_state               TYPE /scwm/de_state,
+    lv_update_ok           TYPE abap_bool,
+    lt_valid_prf           TYPE /scwm/tt_valid_prf_ext,
+    lv_restart_transaction TYPE abap_bool.
+  " Initialize screen parameters
+  /scwm/cl_rf_bll_srvc=>init_screen_param( ).
+  /scwm/cl_rf_bll_srvc=>set_screen_param( 'S_WHO_SCREEN' ).
+
+  lv_fcode = /scwm/cl_rf_bll_srvc=>get_fcode( ).
+
+  CASE lv_fcode.
+
+    WHEN gc_fcode_enter.
+
+      PERFORM enter_processing
+     CHANGING resource
+             who
+             t_rf_pick_hus
+             s_who_screen
+             ordim_confirm
+             tt_ordim_confirm
+             tt_nested_hu
+             nested_hu
+             selection
+             lv_restart_transaction
+             wme_verif.
+
+    WHEN gc_fcode_zprint.
+      PERFORM print_processing.
+
+    WHEN fcode_backf.
+
+*
+*      IF  s_who_screen-recover_flag IS NOT INITIAL.
+*      SELECT SINGLE recover_scr
+*        FROM ztewm_rf_recov
+*        WHERE lgnum = @resource-lgnum
+*          AND rsrc  = @resource-rsrc
+*          AND who   = @gv_who
+*        INTO @DATA(lv_recover_scr).
+      CALL FUNCTION 'Z_EWM_RF_PICK_BACKF_CHECK_PM'
+        CHANGING
+          tt_ordim_confirm = tt_ordim_confirm
+          lv_leave_trans   = lv_leave_trans.
+
+      IF NOT lv_leave_trans IS INITIAL.
+        CALL FUNCTION 'Z_EWM_RF_PICK_LEAVE_TRNS_CHCK'
+          CHANGING
+            who              = who
+            resource         = resource
+            ordim_confirm    = ordim_confirm
+            tt_ordim_confirm = tt_ordim_confirm.
+
+        /scwm/cl_rf_bll_srvc=>set_prmod(
+  /scwm/cl_rf_bll_srvc=>c_prmod_background ).
+        /scwm/cl_rf_bll_srvc=>set_fcode(
+          /scwm/cl_rf_bll_srvc=>c_fcode_leave ).
+        /scwm/cl_rf_bll_srvc=>clear_fcode_bckg( ).
+        EXIT.
+      ELSE.
+        /scwm/cl_rf_bll_srvc=>set_prmod( /scwm/cl_rf_bll_srvc=>c_prmod_background ).
+        /scwm/cl_rf_bll_srvc=>set_fcode( /scwm/cl_rf_bll_srvc=>c_fcode_back ).
+        /scwm/cl_rf_bll_srvc=>set_screen_param( 'S_WHO_SCREEN' ).
+        EXIT.
+      ENDIF.
+  ENDCASE.
+
+
+
+
+
+
+*  DATA lv_fcode TYPE /scwm/de_fcode.
+*
+*  /scwm/cl_rf_bll_srvc=>init_screen_param( ).
+*  /scwm/cl_rf_bll_srvc=>set_screen_param( 'S_WHO_SCREEN' ).
+*
+*  lv_fcode = /scwm/cl_rf_bll_srvc=>get_fcode( ).
+*
+*  CASE lv_fcode.
+*
+*    WHEN 'ENTER'.
+*
+*      " 1. Validate each scanned row
+*      LOOP AT gt_scan ASSIGNING FIELD-SYMBOL(<row>).
+*
+*        " Skip already confirmed rows
+*        IF <row>-zzcertstat = 'X'.
+*          CONTINUE.
+*        ENDIF.
+*
+*        " Skip empty scan fields
+*        IF <row>-zzlabel_scan IS INITIAL.
+*          CONTINUE.
+*        ENDIF.
+*
+*        " Wrong scan
+*        IF <row>-zzlabel_scan <> <row>-zzlabel.
+*          MESSAGE |Wrong label. Expected: { <row>-zzlabel }| TYPE 'E'.
+*          CLEAR <row>-zzlabel_scan.
+*          RETURN.
+*        ENDIF.
+*
+*        " Correct → confirm row
+*        <row>-zzcertstat = 'X'.
+*        CLEAR <row>-zzlabel_scan.
+*
+*      ENDLOOP.
+*
+*      " 2. Check if all confirmed → enable NLPLA
+*      IF gt_scan IS NOT INITIAL AND
+*    NOT line_exists( gt_scan[ zzcertstat = ' ' ] ).
+*        /scwm/cl_rf_bll_srvc=>set_screlm_input_on( gc_scr_elmnt_nlpla_vrf ).
+*
+*        IF gv_all_confirmed = 'X'.
+**          /scwm/cl_rf_bll_srvc=>init_screen_param( ).
+**          /scwm/cl_rf_bll_srvc=>set_screen_param( 'S_WHO_SCREEN' ).
+**          /scwm/cl_rf_bll_srvc=>set_screen_param( 'TT_ORDIM_CONFIRM' ).  " ← add this
+*          " Second ENTER — operator had chance to scan NLPLA
+*          " Check open verification fields — same pattern as standard
+*
+*          IF s_who_screen-nlpla IS INITIAL.
+*            MESSAGE 'Please scan destination location' TYPE 'E'.
+*            RETURN.
+*          ENDIF.
+*
+*          DATA: lv_zzing_outb TYPE zzingoutb.
+*          DATA lt_valid_prf TYPE /scwm/tt_valid_prf_ext.
+*          DATA lv_step      TYPE /scwm/de_step.
+*          DATA lv_state     TYPE /scwm/de_state.
+*
+*          lv_step  = /scwm/cl_rf_bll_srvc=>get_step( ).
+*          lv_state = /scwm/cl_rf_bll_srvc=>get_state( ).
+*
+*          CALL METHOD /scwm/cl_rf_bll_srvc=>get_valid_prf
+*            EXPORTING
+*              iv_step      = lv_step
+*              iv_state     = lv_state
+*            RECEIVING
+*              rt_valid_prf = lt_valid_prf.
+*
+*          " Check if NLPLA verif field is still open
+*          LOOP AT lt_valid_prf TRANSPORTING NO FIELDS
+*            WHERE flg_disable NE 'C'
+*              AND flg_disable NE 'X'.
+*            EXIT.
+*          ENDLOOP.
+*
+*          " Exception: single loose items (colli = 0) → footprint = 0
+*          IF s_who_screen-zv_colli_tot = 0.
+*            lv_zzing_outb = 0.
+*
+*            " Scenario 2: mismatch → footprint = number of labels
+*          ELSEIF gv_nr_etichette <> s_who_screen-zv_colli_tot.
+*            lv_zzing_outb = gv_nr_etichette.
+*
+*            " Scenario 1: match → footprint = colli * ZZING from table
+*          ELSE.
+*            READ TABLE t_rf_pick_hus ASSIGNING FIELD-SYMBOL(<ls_pick_hu>) INDEX 1.
+*            IF sy-subrc = 0.
+*              SELECT SINGLE zzing
+*                FROM ztewm_mat_imb
+*                WHERE matnr = @<ls_pick_hu>-pmat
+*                INTO @DATA(lv_zzing_factor).
+*
+*              IF sy-subrc = 0.
+*                lv_zzing_outb = gv_nr_etichette * lv_zzing_factor.
+*              ELSE.
+*                " Fallback: packaging material not in table
+*                lv_zzing_outb = gv_nr_etichette.
+*              ENDIF.
+*            ELSE.
+*              lv_zzing_outb = gv_nr_etichette.
+*            ENDIF.
+*          ENDIF.
+*          " Get RDOCID, DOCNO, and correct DOCID in fewer DB calls
+*        SELECT SINGLE d~docid
+*            FROM /scwm/ordim_o AS o
+*            INNER JOIN /scdl/db_proch_o AS p
+*              ON p~docid = o~rdocid
+*            INNER JOIN /scdl/db_dlvh_o AS d
+*              ON d~docno = p~docno
+*            WHERE o~lgnum = @resource-lgnum
+*              AND o~who   = @who-who
+*            INTO @DATA(lv_docid).
+*
+*          IF lv_docid IS NOT INITIAL.
+*            UPDATE /scdl/db_dlvh_o
+*              SET zzing_outb = @lv_zzing_outb
+*              WHERE docid = @lv_docid.
+*
+*            IF sy-subrc = 0.
+*              COMMIT WORK AND WAIT.
+*            ENDIF.
+*          ENDIF.
+*
+*
+*  CLEAR: gv_all_confirmed, gt_scan, gv_nr_etichette.
+*          " TODO: WT confirmation here
+*
+*        ELSE.
+*          " First ENTER — just enabled NLPLA, wait for operator to scan
+*          gv_all_confirmed = 'X'.
+*        ENDIF.
+*
+*      ENDIF.
+*
+*      /scwm/cl_rf_bll_srvc=>set_prmod(
+*      /scwm/cl_rf_bll_srvc=>c_prmod_foreground ).
+*
+*    WHEN 'ZPRINT'.
+*
+*      LOOP AT gt_scan ASSIGNING FIELD-SYMBOL(<ls_scan>).
+*        CLEAR <ls_scan>-zzcheckbox.
+*      ENDLOOP.
+*
+*    WHEN fcode_backf.
+*      " Force framework to refresh data container
+**      /scwm/cl_rf_bll_srvc=>init_screen_param( ).
+**      /scwm/cl_rf_bll_srvc=>set_screen_param( 'S_WHO_SCREEN' ).
+*      " Clear labels and packaging when going back from ZPICK6
+**      CLEAR:
+**
+**      gv_all_confirmed,
+**      gt_scan,
+**      s_who_screen,
+**      gt_who_screen.
+**      DO 3 TIMES.
+**        APPEND INITIAL LINE TO gt_who_screen.
+**      ENDDO.
+*
+*      /scwm/cl_rf_bll_srvc=>set_screen_param( 'S_WHO_SCREEN' ).
+*
+*  ENDCASE.
+
+ENDFUNCTION.
