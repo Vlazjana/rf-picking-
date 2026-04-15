@@ -1,0 +1,231 @@
+FUNCTION z_ewm_rf_pick_pibsys_pai .
+*"----------------------------------------------------------------------
+*"*"Local Interface:
+*"  CHANGING
+*"     REFERENCE(RESOURCE) TYPE  /SCWM/S_RSRC OPTIONAL
+*"     REFERENCE(ORDIM_CONFIRM) TYPE  /SCWM/S_RF_ORDIM_CONFIRM OPTIONAL
+*"     REFERENCE(WHO) TYPE  /SCWM/S_WHO_INT OPTIONAL
+*"     REFERENCE(T_RF_PICK_HUS) TYPE  /SCWM/TT_RF_PICK_HUS OPTIONAL
+*"     REFERENCE(TT_ORDIM_CONFIRM) TYPE  /SCWM/TT_RF_ORDIM_CONFIRM
+*"       OPTIONAL
+*"     REFERENCE(WME_VERIF) TYPE  /SCWM/S_WME_VERIF OPTIONAL
+*"     REFERENCE(S_WHO_SCREEN) TYPE  ZSRF_ZPISYS_WHO_SCREEN OPTIONAL
+*"     REFERENCE(SELECTION) TYPE  /SCWM/S_RF_SELECTION OPTIONAL
+*"     REFERENCE(ZT_WHO_SCREEN) TYPE  ZTTRF_ZPISYS_WHO_SCREEN OPTIONAL
+*"     REFERENCE(NESTPT) TYPE  /SCWM/S_RF_NESTED
+*"----------------------------------------------------------------------
+
+  DATA: lv_state         TYPE /scwm/de_state,
+        lv_fcode         TYPE /scwm/de_fcode,
+        ls_wo_rsrc_ty    TYPE /scwm/wo_rsrc_ty,
+        ls_trsrc_typ     TYPE /scwm/trsrc_typ,
+        ls_who           TYPE /scwm/s_who_int,
+        ls_whohu         TYPE /scwm/s_whohu,
+        ls_rf_pick_hus   TYPE /scwm/s_rf_pick_hus,
+        ls_ordim_o       TYPE /scwm/ordim_o,
+        lt_wo_rsrc_ty    TYPE /scwm/tt_wo_rsrc_ty,
+        lt_whohu         TYPE /scwm/tt_whohu_int,
+        lt_ordim_o       TYPE /scwm/tt_ordim_o,
+        ls_resource      TYPE /scwm/rsrc,
+        lv_whoseq        TYPE /scwm/de_whoseq,
+        ls_ordim_confirm TYPE /scwm/s_rf_ordim_confirm,
+        ls_rsrc          TYPE /scwm/rsrc,
+        lv_success       TYPE sysubrc,
+        lv_last_tx       TYPE /scwm/de_ltrans,
+        lv_lgpla         TYPE /scwm/de_rf_vlpla,
+        lt_who           TYPE /scwm/tt_who_int,
+        lt_filter_who    TYPE /scwm/tt_who_int,
+        lv_queue         TYPE /scwm/de_queue.
+
+  DATA:lt_wo_rsrc_ty_temp TYPE /scwm/tt_wo_rsrc_ty,
+       lv_check           TYPE c,
+       lv_man_wo_sel      TYPE xfeld,
+       lt_rf_pick_hus     TYPE /scwm/tt_rf_pick_hus,
+       lv_count_wo        TYPE i.
+
+
+  DATA lt_wo_rsrc_ty_new  TYPE /scwm/tt_wo_rsrc_ty.
+
+  DATA  additional_txt    TYPE string.
+
+  BREAK-POINT ID /scwm/rf_picking.
+  /scwm/cl_rf_bll_srvc=>set_flg_stack( iv_flg_stack = ' ' ).
+* initiating data
+  lv_fcode = /scwm/cl_rf_bll_srvc=>get_fcode( ).
+
+  IF lv_fcode = 'ENTER'.
+    CLEAR: ls_wo_rsrc_ty, ordim_confirm, ls_rf_pick_hus,
+           ls_ordim_o, ls_whohu.
+    REFRESH: lt_wo_rsrc_ty, tt_ordim_confirm, t_rf_pick_hus.
+  ENDIF.
+  gv_pick_sort = gc_sort_ascending.
+
+  IF lv_fcode = 'GTBSYT'.
+    CLEAR s_who_screen.
+    PERFORM init_screen_200
+      CHANGING resource
+               ordim_confirm
+               who
+               t_rf_pick_hus
+               tt_ordim_confirm
+               wme_verif
+               S_who_screen.
+  ENDIF.
+  CLEAR lv_check.
+  CLEAR lv_man_wo_sel.
+
+  lv_fcode = /scwm/cl_rf_bll_srvc=>get_fcode( ).
+*/scwm/cl_rf_bll_srvc=>set_state( space ).
+
+
+  /scwm/cl_rf_bll_srvc=>set_flg_stack( iv_flg_stack = ' ' ). "prevents ZPI1 push
+
+  CASE lv_fcode.
+    WHEN 'ENTER' OR 'GTBSYT'.
+
+      IF lv_fcode = 'GTBSYT'.
+        s_who_screen-who = gv_selected_who.
+        selection-who = gv_selected_who.
+      ELSE.
+        gv_selected_who = s_who_screen-who.
+        selection-who = s_who_screen-who.
+
+*        EXPORT s_who_screen TO MEMORY ID 'ZPISYS_S_WHO_SCREEN'.
+        SET PARAMETER ID 'ZPISYS_WORK_WHO' FIELD s_who_screen-who.
+*        EXPORT s_who_screen TO MEMORY ID 'ZPISYS_S_WHO_SCREEN'.
+*        SET PARAMETER ID 'ZPISYS_WORK_WHO' FIELD s_who_screen-who.
+      ENDIF.
+*      IF selection-who IS INITIAL.
+**        MESSAGE e109.
+*      ENDIF.
+
+      ls_wo_rsrc_ty-who = selection-who.
+      APPEND ls_wo_rsrc_ty TO lt_wo_rsrc_ty.
+      lv_check = 'X'.
+      lv_man_wo_sel = 'X'.
+
+      CLEAR lt_wo_rsrc_ty_temp.
+      IF lt_wo_rsrc_ty IS NOT INITIAL.
+        SELECT * FROM /scwm/wo_rsrc_ty INTO TABLE lt_wo_rsrc_ty_temp
+           FOR ALL ENTRIES IN lt_wo_rsrc_ty
+          WHERE lgnum = resource-lgnum
+            AND who = lt_wo_rsrc_ty-who.
+      ENDIF.
+
+      DELETE lt_wo_rsrc_ty_temp WHERE rsrc_type NE resource-rsrc_type.
+      "Delete all entries with wrong content!
+      DELETE lt_wo_rsrc_ty_temp WHERE content NE wmegc_content_pick.
+      DESCRIBE TABLE lt_wo_rsrc_ty_temp LINES lv_count_wo.
+
+
+      IF lv_count_wo <> 0.
+        Selection-who = s_who_screen-who.
+
+        CALL FUNCTION 'Z_EWM_SCWM_RF_WHO_SELECT'
+          EXPORTING
+            iv_man_wo_sel    = lv_man_wo_sel
+*           iv_recfilt_mode  = 'X'   "The functionality is analog to "FM RSRC_WKBSYS_INITIAL in picking
+*           it_filter_who    = lt_filter_who
+          CHANGING
+            selection        = selection
+            resource         = resource
+            ordim_confirm    = ordim_confirm
+            who              = who
+            t_rf_pick_hus    = lt_rf_pick_hus
+            tt_ordim_confirm = tt_ordim_confirm
+            ct_wo_rsrc_ty    = lt_wo_rsrc_ty
+            success          = lv_success.
+      ENDIF.
+
+* Set state for source first TO (From Bin to Rsrc)
+      CALL FUNCTION '/SCWM/RF_PICK_SET_STATE'
+        CHANGING
+          resource      = resource
+          ordim_confirm = ordim_confirm.
+
+
+      CALL FUNCTION 'ZEWM_RF_PICK_SET_FCODE'
+        CHANGING
+          resource         = resource
+          ordim_confirm    = ordim_confirm
+          tt_ordim_confirm = tt_ordim_confirm
+          who              = who.
+
+      s_who_screen-recover_flag = gv_recover.
+
+*  WHEN 'GTBSYS'.
+**     Get fresh resource data from memory
+*      DATA ls_rsrc_mem TYPE /scwm/rsrc.
+*      CALL FUNCTION '/SCWM/RSRC_RESOURCE_MEMORY'
+*        EXPORTING
+*          iv_uname = sy-uname
+*        CHANGING
+*          cs_rsrc  = ls_rsrc_mem.
+*
+*      DATA(lo_skip_wo2) = /scwm/cl_rf_pick_exc_skip_wo=>get_instance(
+*                            iv_lgnum = ls_rsrc_mem-lgnum ).
+*      DATA(lt_skipped) = lo_skip_wo2->get_skipped_wos( ).
+*
+*      DATA lt_who_remaining TYPE TABLE OF /scwm/who.
+*      PERFORM get_who_list
+*        TABLES lt_who_remaining
+*        USING  ls_rsrc_mem.
+*
+**     Filter out skipped WOs
+*      LOOP AT lt_skipped ASSIGNING FIELD-SYMBOL(<ls_skip>).
+*        DELETE lt_who_remaining WHERE who = <ls_skip>-who.
+*      ENDLOOP.
+*
+*      IF lt_who_remaining IS INITIAL.
+*        /scwm/cl_rf_bll_srvc=>message(
+*          EXPORTING
+*            iv_flg_continue_flow = 'X'
+*            iv_msgid             = '/SCWM/RF_EN'
+*            iv_msgno             = '056' ).
+*        /scwm/cl_rf_bll_srvc=>set_prmod(
+*          EXPORTING
+*            iv_prmod    = /scwm/cl_rf_bll_srvc=>c_prmod_background
+*            iv_ovr_cust = 'X' ).
+*        /scwm/cl_rf_bll_srvc=>set_fcode( /scwm/cl_rf_bll_srvc=>c_fcode_leave ).
+*        RETURN.
+*      ELSE.
+
+**        *       Clear stack to prevent back navigation issues
+*        /scwm/cl_rf_bll_srvc=>set_call_stack_optimizer(
+*          iv_step = 'ZPI2' ).
+*        /scwm/cl_rf_bll_srvc=>set_call_stack_optimizer(
+*          iv_step = 'ZPI1' ).
+*        /scwm/cl_rf_bll_srvc=>set_call_stack_optimizer(
+*          iv_step = 'PIMTTO' ).
+*        /scwm/cl_rf_bll_srvc=>set_prmod(
+*          EXPORTING
+*            iv_prmod    = /scwm/cl_rf_bll_srvc=>c_prmod_background
+*            iv_ovr_cust = 'X' ).
+*        /scwm/cl_rf_bll_srvc=>set_fcode( 'INIT' ).
+*        RETURN.
+*      ENDIF.
+
+*     /scwm/cl_rf_bll_srvc=>init_call_stack_optimizer( ).
+*        /scwm/cl_rf_bll_srvc=>recover_ltrans(
+*          iv_ltrans = 'ZPISYS' ).
+*        RETURN.
+
+**       Remove ALL possible stack entries
+*        /scwm/cl_rf_bll_srvc=>set_call_stack_optimizer( iv_step = 'PIMTTO' ).
+*        /scwm/cl_rf_bll_srvc=>set_call_stack_optimizer( iv_step = 'ZPI2' ).
+*        /scwm/cl_rf_bll_srvc=>set_call_stack_optimizer( iv_step = 'ZPI1' ).
+*        /scwm/cl_rf_bll_srvc=>set_call_stack_optimizer( iv_step = 'PIMTTO' ).
+*        /scwm/cl_rf_bll_srvc=>set_call_stack_optimizer( iv_step = 'ZPI2' ).
+*        /scwm/cl_rf_bll_srvc=>set_call_stack_optimizer( iv_step = 'ZPI1' ).
+*        /scwm/cl_rf_bll_srvc=>set_flg_stack( iv_flg_stack = ' ' ).
+*        /scwm/cl_rf_bll_srvc=>set_prmod(
+*          EXPORTING
+*            iv_prmod    = /scwm/cl_rf_bll_srvc=>c_prmod_foreground
+*            iv_ovr_cust = 'X' ).
+*        /scwm/cl_rf_bll_srvc=>set_fcode( 'INIT' ).
+*        RETURN.
+*ENDIF.
+
+  ENDCASE.
+
+ENDFUNCTION.
