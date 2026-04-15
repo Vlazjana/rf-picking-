@@ -1,0 +1,507 @@
+FUNCTION z_ewm_rf_pick_pihuin_pai1.
+*"----------------------------------------------------------------------
+*"*"Local Interface:
+*"  CHANGING
+*"     REFERENCE(RESOURCE) TYPE  /SCWM/S_RSRC
+*"     REFERENCE(RSRC_TYPE) TYPE  /SCWM/S_TRSRC_TYP
+*"     REFERENCE(ORDIM_CONFIRM) TYPE  /SCWM/S_RF_ORDIM_CONFIRM
+*"     REFERENCE(WHO) TYPE  /SCWM/S_WHO_INT
+*"     REFERENCE(T_RF_PICK_HUS) TYPE  /SCWM/TT_RF_PICK_HUS
+*"     REFERENCE(TT_ORDIM_CONFIRM) TYPE  /SCWM/TT_RF_ORDIM_CONFIRM
+*"     REFERENCE(NESTPT) TYPE  /SCWM/S_RF_NESTED
+*"----------------------------------------------------------------------
+
+
+  DATA: lv_fcode TYPE /scwm/de_fcode.
+  DATA: lv_lines TYPE sy-tabix.
+  DATA: ls_t340d TYPE /scwm/t340d.
+  DATA: ls_huhdr TYPE /scwm/s_huhdr_int.
+  DATA: lt_new_pick_hus TYPE /scwm/tt_rf_pick_hus.
+  DATA: oref TYPE REF TO /scwm/cl_wm_packing.
+  DATA: lv_applic        TYPE /scwm/de_applic,
+        lv_pres_prf      TYPE /scwm/de_pres_prf,
+        lv_ltrans        TYPE /scwm/de_ltrans,
+        lv_step          TYPE /scwm/de_step,
+        lv_state         TYPE /scwm/de_state,
+        lv_return        TYPE sy-subrc,
+        ls_ordim_confirm TYPE /scwm/s_rf_ordim_confirm,
+        ls_huhdr_x       TYPE /scwm/huhdr,
+        ls_who           TYPE /scwm/who,
+        lt_ordim_o       TYPE /scwm/tt_ordim_o,
+        ls_ordim_o       TYPE /scwm/ordim_o.
+  DATA: lo_badi TYPE REF TO /scwm/ex_rf_prt_wo_hu.
+
+  DATA: lt_text   TYPE tdtab_c132.
+
+  FIELD-SYMBOLS: <pick_hu> TYPE /scwm/s_rf_pick_hus.
+
+  BREAK-POINT ID /scwm/rf_picking.
+  lv_ltrans = /scwm/cl_rf_bll_srvc=>get_ltrans( ).
+* Get fcode
+  lv_fcode = /scwm/cl_rf_bll_srvc=>get_fcode( ).
+
+* First Delete /Reset the DLV Text
+  CLEAR: lt_text.
+  CALL METHOD /scwm/cl_rf_bll_srvc=>set_rf_text
+    EXPORTING
+      it_text = lt_text.
+
+  CASE lv_fcode.
+    WHEN fcode_backf.
+      IF gv_last_step = step_pick_pichhu.
+        /scwm/cl_rf_bll_srvc=>set_prmod(
+                 /scwm/cl_rf_bll_srvc=>c_prmod_background ).
+        /scwm/cl_rf_bll_srvc=>set_fcode(
+                 /scwm/cl_rf_bll_srvc=>c_fcode_update_back ).
+        CLEAR gv_last_step.
+      ELSE.
+        CALL FUNCTION 'Z_EWM_RF_PICK_LEAVE_TRNS_CHCK'
+          CHANGING
+            who              = who
+            resource         = resource
+            ordim_confirm    = ordim_confirm
+            tt_ordim_confirm = tt_ordim_confirm.
+      ENDIF.
+      EXIT.
+
+    WHEN fcode_skip_wo.
+      gv_exec_step = wmegc_execstep_05.
+      EXIT.
+
+    WHEN fcode_next OR 'ENTER'.
+*     Clear destination HU, from warehouse task, because
+*     in case of WHO with more WTs, the value of the previous
+*     WT can be remain in the ORDIM_CONFIRM. This can lead to error.
+*     For example by error message by call of FM TO_CONFIRM,
+*     the user returns to the pick HU screen, and creates a new
+*     pick-HU to use it. But in this case a nested HU created
+*     with the "old" destination HU due "inconsictency" of NLENR
+*     in ORDIM_CONFIRM with actually defined pick-HU
+*      CLEAR: ordim_confirm-nlenr_o,ordim_confirm-nlenr.
+*      MODIFY tt_ordim_confirm FROM ordim_confirm
+*        TRANSPORTING nlenr_o nlenr
+*            WHERE mandt = ordim_confirm-mandt AND
+*                  lgnum = ordim_confirm-lgnum AND
+*                  tanum = ordim_confirm-tanum.
+
+**     destination bin HU requirement check.
+*      PERFORM check_hu_req_on_destination
+*        USING who-lgnum
+*              tt_ordim_confirm
+*              t_rf_pick_hus.
+
+
+*      IF lv_ltrans = 'ZPIWHO'  OR lv_ltrans = 'ZPIQUE'
+
+      DATA: ls_first_conf TYPE /scwm/s_rf_ordim_confirm,
+            lv_pmat       TYPE /scwm/de_pmat.
+
+      lv_ltrans = /scwm/cl_rf_bll_srvc=>get_ltrans( ).
+      READ TABLE t_rf_pick_hus ASSIGNING <pick_hu>
+          WITH KEY huident = ''.  " <- rreshti bosh (pa HU)
+
+      IF sy-subrc <> 0 AND t_rf_pick_hus IS NOT INITIAL.
+
+        PERFORM locate_move_hus_to_resource
+          TABLES t_rf_pick_hus
+           USING who resource ls_t340d oref.
+
+        CALL FUNCTION '/SCWM/RF_PICK_SET_FCODE'
+          CHANGING
+            resource         = resource
+            ordim_confirm    = ordim_confirm
+            tt_ordim_confirm = tt_ordim_confirm.
+/scwm/cl_rf_bll_srvc=>set_line( 1 ).
+        RETURN.
+      ENDIF.
+
+
+      READ TABLE tt_ordim_confirm INTO ls_first_conf INDEX 1.
+      IF sy-subrc = 0.
+
+        PERFORM get_pack_mat_from_packspec
+         USING   who-lgnum
+                who-who
+              ls_first_conf-rdocid
+         CHANGING nestpt-pmat.
+
+        IF nestpt-pmat IS INITIAL.
+*            MESSAGE 'No packaging specification found' TYPE 'E'.
+          MESSAGE e023(zewm_rf_msg).
+          RETURN.
+        ENDIF.
+
+        "suggest package material on first empty HU row only
+        READ TABLE t_rf_pick_hus ASSIGNING <pick_hu>
+          WITH KEY huident = ''.
+
+        IF sy-subrc = 0 AND <pick_hu>-pmat IS INITIAL.
+          <pick_hu>-pmat = lv_pmat.
+        ENDIF.
+
+      ENDIF.
+*      ENDIF.
+
+      "Set the RF related data for later printing
+
+      CALL FUNCTION '/SCWM/RF_PRINT_GLOBAL_DATA'.
+
+      IF gv_last_step = step_pick_pichhu.
+        /scwm/cl_rf_bll_srvc=>set_prmod(
+                 /scwm/cl_rf_bll_srvc=>c_prmod_background ).
+        /scwm/cl_rf_bll_srvc=>set_fcode(
+                 /scwm/cl_rf_bll_srvc=>c_fcode_update_back ).
+        CLEAR gv_last_step.
+        EXIT.
+      ENDIF.
+      IF who-type = wmegc_wcr_dd.
+        BREAK-POINT ID /scwm/dd_picking.
+* Distribution Device:
+*DD1       check if user created a pick-HU
+        LOOP AT t_rf_pick_hus ASSIGNING <pick_hu>
+                   WHERE huident IS NOT INITIAL.
+          EXIT.
+        ENDLOOP.
+        IF sy-subrc IS NOT INITIAL.
+*          MESSAGE e074.
+        ENDIF.
+*DD2: set state -> we need DD-screen to show DLOGPOS
+        lv_state = /scwm/cl_rf_bll_srvc=>get_state( ).
+        IF NOT ( lv_state = gc_PLHU OR lv_state = gc_plmt ).
+          /scwm/cl_rf_bll_srvc=>set_state( gc_dd_mtto ).
+        ENDIF.
+      ENDIF.
+
+
+    WHEN fcode_print.
+      lv_applic   = /scwm/cl_rf_bll_srvc=>get_applic( ).
+      lv_pres_prf = /scwm/cl_rf_bll_srvc=>get_pres_prf( ).
+      lv_ltrans   = /scwm/cl_rf_bll_srvc=>get_ltrans( ).
+      lv_step = /scwm/cl_rf_bll_srvc=>get_step( ).
+      lv_state = /scwm/cl_rf_bll_srvc=>get_state( ).
+      MOVE-CORRESPONDING who TO ls_who.
+
+      "Set the RF related data for later printing
+      CALL FUNCTION '/SCWM/RF_PRINT_GLOBAL_DATA'.
+
+      CLEAR ls_ordim_o.
+      REFRESH lt_ordim_o.
+      LOOP AT tt_ordim_confirm INTO ls_ordim_confirm.
+        MOVE-CORRESPONDING ls_ordim_confirm TO ls_ordim_o.
+        APPEND ls_ordim_o  TO lt_ordim_o.
+      ENDLOOP.
+
+      TRY.
+          GET BADI lo_badi
+            FILTERS
+              lgnum = ls_who-lgnum.
+
+          CALL BADI lo_badi->print
+            EXPORTING
+              iv_lgnum    = ls_who-lgnum
+              iv_applic   = lv_applic
+              iv_pres_prf = lv_pres_prf
+              iv_ltrans   = lv_ltrans
+              iv_step     = lv_step
+              iv_fcode    = lv_fcode
+              iv_state    = lv_state
+              is_who      = ls_who
+              it_ordim_o  = lt_ordim_o
+              is_huhdr    = ls_huhdr_x
+              it_pick_hus = t_rf_pick_hus
+            IMPORTING
+              ev_return   = lv_return.
+
+          IF lv_return <> 0.
+*            MESSAGE e053.
+          ENDIF.
+
+        CATCH cx_badi.
+          MESSAGE e305(/scwm/ui_rf).
+      ENDTRY.
+      EXIT.
+
+  ENDCASE.
+
+* Create instance
+  CREATE OBJECT oref.
+  IF sy-subrc <> 0.
+    MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+      WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+  ENDIF.
+
+* Read process type for HU-TO creation for inverse picking
+  CALL FUNCTION '/SCWM/T340D_READ_SINGLE'
+    EXPORTING
+      iv_lgnum = who-lgnum
+    IMPORTING
+      es_t340d = ls_t340d.
+
+* Initialize
+  "or CALL METHOD /scwm/cl_wm_packing=>init
+*  CALL METHOD oref->init
+*    EXPORTING
+*      iv_lgnum  = who-lgnum
+*      iv_procty = ls_t340d-pt_hures
+*    EXCEPTIONS
+*      OTHERS    = 99.
+
+  LOOP AT t_rf_pick_hus ASSIGNING <pick_hu>.
+*   If position management is manual
+    IF rsrc_type-postn_mngmnt = gc_manual_postn_mng
+      AND <pick_hu>-logpos IS INITIAL.
+*     Missing position for HU &1. Scan again and update
+*      MESSAGE e066 WITH <pick_hu>-huident.
+    ENDIF.
+  ENDLOOP.
+
+* Locate and move pick-HUs to resource
+  PERFORM locate_move_hus_to_resource
+    TABLES t_rf_pick_hus
+     USING who resource ls_t340d oref.
+
+* Set actual function code for navigation to next step
+  CALL FUNCTION '/SCWM/RF_PICK_SET_FCODE'
+    CHANGING
+      resource         = resource
+      ordim_confirm    = ordim_confirm
+      tt_ordim_confirm = tt_ordim_confirm.
+
+  /scwm/cl_rf_bll_srvc=>set_line( 1 ).
+
+
+
+ENDFUNCTION.
+*
+*
+**..............................................................
+** form locate_move_hus_to_resource
+** (different in different versions)
+** locate and move existing pick-HUs from their bins to resource
+**..............................................................
+*FORM locate_move_hus_to_resource
+*    TABLES pt_rf_pick_hus TYPE /scwm/tt_rf_pick_hus
+*     USING ps_who TYPE /scwm/s_who_int
+*           ps_resource TYPE /scwm/s_rsrc
+*           ps_t340d TYPE /scwm/t340d
+*           po_oref TYPE REF TO /scwm/cl_wm_packing.
+*
+*  DATA: lt_huhdr_to_move TYPE /scwm/tt_huhdr_int.
+*  DATA: pv_who   TYPE /scwm/de_who,
+*        pv_lgnum TYPE /scwm/lgnum.
+*  DATA: ls_range   TYPE rsdsselopt,
+*        lr_huident TYPE rseloption,
+*        lt_huhdr   TYPE /scwm/tt_huhdr_int.
+*
+*  FIELD-SYMBOLS: <pick_hu> TYPE /scwm/s_rf_pick_hus,
+*                 <huhdr>   TYPE /scwm/s_huhdr_int.
+*
+** Loop on all relevant pick-HUs
+*  LOOP AT pt_rf_pick_hus ASSIGNING <pick_hu>.
+**   build range table for HUs
+*    CLEAR ls_range.
+*    ls_range-sign   = wmegc_sign_inclusive.
+*    ls_range-option = wmegc_option_eq.
+*    ls_range-low    = <pick_hu>-huident.
+*    APPEND ls_range TO lr_huident.
+*  ENDLOOP.
+*
+*  IF lr_huident IS NOT INITIAL.
+*    CALL FUNCTION '/SCWM/HU_SELECT_GEN'
+*      EXPORTING
+*        iv_lgnum     = ps_who-lgnum
+*        ir_huident   = lr_huident
+*      IMPORTING
+*        et_huhdr     = lt_huhdr
+*      EXCEPTIONS
+*        wrong_input  = 1
+*        not_possible = 2
+*        OTHERS       = 3.
+*    IF sy-subrc NE 0.
+*      MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+*              WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+*    ENDIF.
+*  ENDIF.
+*
+*  LOOP AT lt_huhdr ASSIGNING <huhdr>.
+**   If pick-HU is not on the resource
+*    IF <huhdr>-rsrc NE ps_resource-rsrc.
+**     filtering the sub HUs
+*      READ TABLE pt_rf_pick_hus
+*        WITH KEY huident = <huhdr>-huident TRANSPORTING NO FIELDS.
+*
+*      IF sy-subrc = 0.
+**       Collect pick-HUs for move to resource
+*        APPEND <huhdr> TO lt_huhdr_to_move.
+*      ENDIF.
+*    ENDIF.
+*  ENDLOOP.
+*
+*  IF NOT lt_huhdr_to_move[] IS INITIAL.
+**   Move pick-HUs to resource
+*    pv_who = ps_who-who.
+*    pv_lgnum = ps_who-lgnum.
+*    PERFORM move_hus_to_resource
+*     TABLES pt_rf_pick_hus lt_huhdr_to_move
+*      USING pv_who pv_lgnum ps_resource po_oref.
+*  ENDIF.
+*
+*
+*
+*ENDFORM.  "locate_move_hus_to_resource
+*
+*
+*
+**...................................................
+** form move_hus_to_resource
+** (different in different versions)
+** move existing pick-HUs from their bins to resource
+**...................................................
+*FORM move_hus_to_resource
+* TABLES pt_rf_pick_hus TYPE /scwm/tt_rf_pick_hus
+*        pt_hu_hdr_to_move TYPE /scwm/tt_huhdr_int
+*  USING pv_who TYPE /scwm/de_who
+*        pv_lgnum TYPE /scwm/lgnum
+*        ps_resource TYPE /scwm/s_rsrc
+*        po_oref TYPE REF TO /scwm/cl_wm_packing.
+*
+*  DATA: ls_rf_pick_hus TYPE /scwm/s_rf_pick_hus,
+*        ls_t340d       TYPE /scwm/t340d.
+*
+*  DATA: ls_pack_controle TYPE /scwm/s_pack_controle,
+*        lv_act_bin       TYPE /scwm/de_actual_bin,
+*        ls_resource      TYPE /scwm/rsrc.
+*
+*  DATA: lv_wait  TYPE char1,
+*        lv_prdvc TYPE /scwm/de_prdvc,
+*        ls_prdvc TYPE /scwm/tprdv_cat.
+*
+*  FIELD-SYMBOLS: <huhdr> TYPE /scwm/s_huhdr_int.
+*
+*
+** Set warehouse and WPT for the pick-hu move
+*  CALL FUNCTION '/SCWM/T340D_READ_SINGLE'
+*    EXPORTING
+*      iv_lgnum  = pv_lgnum
+*    IMPORTING
+*      es_t340d  = ls_t340d
+*    EXCEPTIONS
+*      not_found = 1
+*      OTHERS    = 2.
+*  IF sy-subrc <> 0.
+*    MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+*          WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+*  ENDIF.
+*
+*  IF ls_t340d-pt_hures IS INITIAL.
+**    MESSAGE e146.
+*  ENDIF.
+*
+** Retrieve resource from DB
+*  CALL FUNCTION '/SCWM/RSRC_READ_SINGLE'
+*    EXPORTING
+*      iv_lgnum  = pv_lgnum
+*      iv_rsrc   = ps_resource-rsrc
+*    IMPORTING
+*      es_rsrc   = ls_resource
+*    EXCEPTIONS
+*      not_found = 1
+*      OTHERS    = 2.
+*  IF sy-subrc <> 0.
+*    MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+*          WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+*  ENDIF.
+** save the last actual bin, because the precreated pickHU move to
+** the rsrc will update the lastbin, and it ruin the last real location.
+*  lv_act_bin = ls_resource-actual_bin.
+*
+*  ls_pack_controle-processor_det = abap_true.
+*
+*  CALL METHOD po_oref->init
+*    EXPORTING
+*      iv_lgnum         = pv_lgnum
+*      is_pack_controle = ls_pack_controle
+*      iv_procty        = ls_t340d-pt_hures
+*    EXCEPTIONS
+*      error            = 1
+*      OTHERS           = 2.
+*  IF sy-subrc <> 0.
+*    MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+*               WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+*  ENDIF.
+*
+** Loop on pick-HUs that need to be moved to the resource
+*  LOOP AT pt_hu_hdr_to_move ASSIGNING <huhdr>.
+*    CLEAR ls_rf_pick_hus.
+**   Get screen data (logical position) for pick HU
+*    READ TABLE pt_rf_pick_hus
+*      WITH KEY huident = <huhdr>-huident INTO ls_rf_pick_hus.
+**   Move pick hu to resource
+*    CALL METHOD po_oref->move_hu_to_resource
+*      EXPORTING
+*        iv_hu       = <huhdr>-guid_hu
+*        iv_resource = ps_resource-rsrc
+*        iv_logpos   = ls_rf_pick_hus-logpos
+*        iv_who      = pv_who
+*      EXCEPTIONS
+*        error       = 1
+*        OTHERS      = 2.
+*    IF sy-subrc <> 0.
+*      MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+*                 WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+*    ENDIF.
+*  ENDLOOP.
+*
+*  lv_wait = gc_xfeld.
+*
+** Save
+*  CALL METHOD po_oref->/scwm/if_pack~save
+*    EXPORTING
+*      iv_commit = gc_xfeld
+*      iv_wait   = lv_wait
+*    EXCEPTIONS
+*      error     = 1
+*      OTHERS    = 2.
+*  IF sy-subrc <> 0.
+*    /scwm/cl_pack_view=>msg_error( ).
+*  ENDIF.
+*
+** reread the rsrc table and update back the previously saved
+** actual bin
+*  CALL FUNCTION '/SCWM/RSRC_READ_SINGLE'
+*    EXPORTING
+*      iv_lgnum  = pv_lgnum
+*      iv_rsrc   = ps_resource-rsrc
+*    IMPORTING
+*      es_rsrc   = ls_resource
+*    EXCEPTIONS
+*      not_found = 1
+*      OTHERS    = 2.
+*  IF sy-subrc <> 0.
+*    MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+*          WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+*  ENDIF.
+*  ls_resource-actual_bin = lv_act_bin.
+** Set resource settings
+*  CALL FUNCTION '/SCWM/RSRC_RESOURCE_SET'
+*    EXPORTING
+*      iv_action = wmegc_update
+*      is_rsrc   = ls_resource.
+*
+*  COMMIT WORK AND WAIT.
+*  CALL METHOD /scwm/cl_tm=>cleanup( ).
+*
+** Re-read and lock the WO again
+*  TRY.
+*      CALL FUNCTION '/SCWM/WHO_SELECT'
+*        EXPORTING
+*          iv_lgnum    = pv_lgnum
+*          iv_who      = pv_who
+*          iv_lock_who = 'X'.
+*    CATCH /scwm/cx_core.
+*      MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+*        WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+*  ENDTRY.
+*
+*ENDFORM. "move_hus_to_resource
+*
