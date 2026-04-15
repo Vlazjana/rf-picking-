@@ -1,4 +1,4 @@
-FUNCTION z_ewm_rf_pick_dest_pai .
+FUNCTION z_ewm_rf_pick_dest_pai . 
 *"----------------------------------------------------------------------
 *"*"Local Interface:
 *"  CHANGING 
