@@ -1,0 +1,155 @@
+FUNCTION z_ewm_rf_pick_pircvr_pai1 .
+*"----------------------------------------------------------------------
+*"*"Local Interface:
+*"  CHANGING
+*"     REFERENCE(SELECTION) TYPE  /SCWM/S_RF_SELECTION
+*"     REFERENCE(RESOURCE) TYPE  /SCWM/S_RSRC
+*"     REFERENCE(ORDIM_CONFIRM) TYPE  /SCWM/S_RF_ORDIM_CONFIRM
+*"     REFERENCE(WHO) TYPE  /SCWM/S_WHO_INT
+*"     REFERENCE(T_RF_PICK_HUS) TYPE  /SCWM/TT_RF_PICK_HUS
+*"     REFERENCE(TT_ORDIM_CONFIRM) TYPE  /SCWM/TT_RF_ORDIM_CONFIRM
+*"     REFERENCE(WME_VERIF) TYPE  /SCWM/S_WME_VERIF
+*"     REFERENCE(S_WHO_SCREEN) TYPE  ZSRF_ZPISYS_WHO_SCREEN
+*"----------------------------------------------------------------------
+
+* need to check data and to define next step according to customizing
+* Currently goes to introduce HU screen.
+
+  DATA: lv_ltrans        TYPE /scwm/de_ltrans,
+        ls_wo_rsrc_ty    TYPE /scwm/wo_rsrc_ty,
+        ls_trsrc_typ     TYPE /scwm/trsrc_typ,
+        lt_wo_rsrc_ty    TYPE /scwm/tt_wo_rsrc_ty,
+        ls_resource      TYPE /scwm/rsrc,
+        lv_whoseq        TYPE /scwm/de_whoseq,
+        ls_ordim_confirm TYPE /scwm/s_rf_ordim_confirm.
+
+  BREAK-POINT ID /scwm/rf_picking.
+
+* Set process mode to foreground as default
+  /scwm/cl_rf_bll_srvc=>set_prmod(
+                             /scwm/cl_rf_bll_srvc=>c_prmod_background ).
+
+* Initiating data
+  CLEAR: ls_wo_rsrc_ty, ordim_confirm, who.
+  REFRESH: lt_wo_rsrc_ty, tt_ordim_confirm, t_rf_pick_hus.
+
+* Set Global variables:
+* 1. TO sort order - Ascendeing
+* 2. Recovery is on.
+  gv_pick_sort = gc_sort_ascending.
+  gv_recovery_on = gc_xfeld.
+
+* Get resource ID.
+  MOVE-CORRESPONDING resource TO ls_resource.
+  CALL FUNCTION '/SCWM/RSRC_RESOURCE_MEMORY'
+    EXPORTING
+      iv_uname = sy-uname
+    CHANGING
+      cs_rsrc  = ls_resource.
+  MOVE-CORRESPONDING ls_resource TO resource.
+
+  CALL METHOD /scwm/cl_tm=>set_lgnum( ls_resource-lgnum ).
+
+* Set global variable for resource type position management.
+  CALL FUNCTION '/SCWM/RSRC_TRSRC_TYP_READ'
+    EXPORTING
+      iv_lgnum     = resource-lgnum
+      iv_rsrc_type = resource-rsrc_type
+    IMPORTING
+      es_trsrc_typ = ls_trsrc_typ
+    EXCEPTIONS
+      not_found    = 1
+      OTHERS       = 2.
+  IF sy-subrc <> 0.
+*    MESSAGE e036 WITH resource-rsrc. JQ
+  ELSE.
+    gv_postn_mngmnt = ls_trsrc_typ-postn_mngmnt.
+  ENDIF.
+
+* Get recovery data from resource
+  CALL FUNCTION '/SCWM/RSRC_WHO_RECOVER'
+    EXPORTING
+      iv_get_info = gc_xfeld
+    IMPORTING
+      es_who      = who
+    CHANGING
+      resource    = resource.
+
+
+* Get logical transaction
+  lv_ltrans = /scwm/cl_rf_bll_srvc=>get_ltrans( ).
+
+  ls_wo_rsrc_ty-who = who-who.
+  APPEND ls_wo_rsrc_ty TO lt_wo_rsrc_ty.
+
+* select and lock WHO according to selection criteria.
+* Get TO data.
+  CALL FUNCTION '/SCWM/RF_RCVR_WHO_SELECT'
+    CHANGING
+      selection        = selection
+      resource         = resource
+      ordim_confirm    = ordim_confirm
+      who              = who
+      t_rf_pick_hus    = t_rf_pick_hus
+      tt_ordim_confirm = tt_ordim_confirm
+      ct_wo_rsrc_ty    = lt_wo_rsrc_ty.
+
+  /scwm/cl_rf_bll_srvc=>set_prmod('1').
+
+  READ TABLE tt_ordim_confirm INDEX 1 INTO ordim_confirm.
+  "if we use asynchronous processing some preparations are required
+  /scwm/cl_rf_confirm_picking=>get_instance( )->init_async_processing(
+    CHANGING
+      ct_ordim_confirm = tt_ordim_confirm ).
+*  /scwm/cl_rf_confirm_picking=>get_instance( )->init_async_processing( tt_ordim_confirm ).
+
+* In case we have source TOs we delete Dest TOs except of Repl TOs.
+  IF NOT ordim_confirm IS INITIAL.
+    CLEAR lv_whoseq.
+    LOOP AT tt_ordim_confirm INTO ls_ordim_confirm
+      WHERE srsrc IS INITIAL.
+      IF ls_ordim_confirm-whoseq > lv_whoseq.
+        lv_whoseq = ls_ordim_confirm-whoseq.
+      ENDIF.
+    ENDLOOP.
+    IF lv_whoseq > 0.
+      DELETE tt_ordim_confirm
+       WHERE lgnum = ordim_confirm-lgnum AND
+             srsrc IS NOT INITIAL AND
+             whoseq > lv_whoseq.
+    ENDIF.
+  ENDIF.
+
+* may happen that the previous logic delete the entry from
+* TT_ORDIM_CONFIRM which is currently in ORDIM_CONFIRM.
+* So ORDIM_CONFIRM refresh is mandatory.
+  READ TABLE tt_ordim_confirm INDEX 1 INTO ordim_confirm.
+
+* Fill container for application specific verification
+  CALL FUNCTION '/SCWM/RF_FILL_WME_VERIF'
+    EXPORTING
+      iv_lgnum     = ordim_confirm-lgnum
+      iv_procty    = ordim_confirm-procty
+      iv_trart     = ordim_confirm-trart
+      iv_act_type  = ordim_confirm-act_type
+      iv_aarea     = ordim_confirm-aarea
+    IMPORTING
+      es_wme_verif = wme_verif.
+* Set state for source first TO (From Bin to Rsrc)
+  CALL FUNCTION '/SCWM/RF_PICK_SET_STATE'
+    CHANGING
+      resource      = resource
+      ordim_confirm = ordim_confirm.
+
+* Set Fcode
+  CALL FUNCTION 'ZEWM_RF_PICK_SET_FCODE'
+    CHANGING
+      resource         = resource
+      ordim_confirm    = ordim_confirm
+      tt_ordim_confirm = tt_ordim_confirm
+      who              = who.
+
+  s_who_screen-recover_flag = gv_recover.
+
+
+ENDFUNCTION.
