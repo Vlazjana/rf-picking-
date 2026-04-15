@@ -1,0 +1,63 @@
+FUNCTION z_ewm_rf_pick_reprint_pai .
+*"----------------------------------------------------------------------
+*"*"Local Interface:
+*"  CHANGING
+*"     REFERENCE(SELECTION) TYPE  /SCWM/S_RF_SELECTION OPTIONAL
+*"     REFERENCE(RESOURCE) TYPE  /SCWM/S_RSRC OPTIONAL
+*"     REFERENCE(WHO) TYPE  /SCWM/S_WHO_INT OPTIONAL
+*"     REFERENCE(ORDIM_CONFIRM) TYPE  /SCWM/S_RF_ORDIM_CONFIRM OPTIONAL
+*"     REFERENCE(TT_ORDIM_CONFIRM) TYPE  /SCWM/TT_RF_ORDIM_CONFIRM
+*"       OPTIONAL
+*"     REFERENCE(TT_NESTED_HU) TYPE  /SCWM/TT_RF_NESTED_HU OPTIONAL
+*"     REFERENCE(T_RF_PICK_HUS) TYPE  /SCWM/TT_RF_PICK_HUS OPTIONAL
+*"     REFERENCE(CT_SERNR) TYPE  /SCWM/TT_RF_SERNR OPTIONAL
+*"     REFERENCE(CT_SERNR_DIFF) TYPE  /SCWM/TT_RF_SERNR OPTIONAL
+*"     REFERENCE(CS_SN) TYPE  /SCWM/S_RF_SN OPTIONAL
+*"     REFERENCE(WME_VERIF) TYPE  /SCWM/S_WME_VERIF OPTIONAL
+*"     REFERENCE(CT_SERNR_LSCK) TYPE  /SCWM/TT_RF_SERNR OPTIONAL
+*"     REFERENCE(NESTPT) TYPE  /SCWM/S_RF_NESTED OPTIONAL
+*"     REFERENCE(S_WHO_SCREEN) TYPE  ZSRF_ZPISYS_WHO_SCREEN OPTIONAL
+*"     REFERENCE(ZT_WHO_SCREEN) TYPE  ZTTRF_ZPISYS_WHO_SCREEN OPTIONAL
+*"     REFERENCE(ZS_CERTIF_SCAN) TYPE  ZSRF_CERTIF_SCAN OPTIONAL
+*"     REFERENCE(ZT_CERTIF_SCAN) TYPE  ZTRF_CERTIF_SCAN OPTIONAL
+*"----------------------------------------------------------------------
+
+  CONSTANTS: lc_smartform TYPE tdsfname VALUE 'ZEWM_PICKING_LABEL'.
+
+*  DATA: lv_fm_name       TYPE rs38l_fnam,
+*        ls_ctrl_op       TYPE ssfctrlop,
+*        ls_comp_op       TYPE ssfcompop,
+*        ls_return        TYPE ssfcrescl,
+*        lt_print_label   TYPE TABLE OF zsrf_zpisys_who_screen,
+*        lt_rows_to_print TYPE TABLE OF zsrf_certif_scan.
+
+  DATA(lv_fcode) = /scwm/cl_rf_bll_srvc=>get_fcode( ).
+  gs_who_screen = s_who_screen.
+  CASE lv_fcode.
+    WHEN 'ZRPRT'.  " Ristampa selected
+      zt_certif_scan = VALUE #(
+        FOR <row> IN gt_scan
+        WHERE ( zzcheckbox = 'X' )
+        ( <row> ) ).
+
+      IF zt_certif_scan IS INITIAL.
+*        MESSAGE 'Select at least one label' TYPE 'E'.
+        MESSAGE e041(zewm_rf_msg).
+        RETURN.
+      ENDIF.
+      PERFORM print_labels USING zt_certif_scan lc_smartform.
+    WHEN 'ZRPRA'.  " Ristampa Tutto
+      zt_certif_scan = gt_scan.
+      PERFORM print_labels USING zt_certif_scan lc_smartform.
+
+      /scwm/cl_rf_bll_srvc=>set_prmod(
+        /scwm/cl_rf_bll_srvc=>c_prmod_foreground ).
+    WHEN fcode_backf.
+      LOOP AT gt_scan ASSIGNING FIELD-SYMBOL(<row_back>).
+        CLEAR <row_back>-zzcheckbox.
+      ENDLOOP.
+*  WHEN fcode_backf.  " Back
+  ENDCASE.
+
+
+ENDFUNCTION.
