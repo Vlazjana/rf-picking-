@@ -1,0 +1,108 @@
+FUNCTION Z_EWM_RF_PICK_BACKF_CHECK_PM.
+*"--------------------------------------------------------------------
+*"*"Local Interface:
+*"  CHANGING
+*"     REFERENCE(TT_ORDIM_CONFIRM) TYPE  /SCWM/TT_RF_ORDIM_CONFIRM
+*"     REFERENCE(LV_LEAVE_TRANS) TYPE  XFELD
+*"--------------------------------------------------------------------
+
+* need to check data and to define next step according to customizing
+  DATA: lv_ltrans              TYPE /scwm/de_trans,
+        lv_step                TYPE /scwm/de_step,
+        lv_fcode               TYPE /scwm/de_fcode,
+        ls_ordim_confirm       TYPE /scwm/s_rf_ordim_confirm,
+        lv_goto_step_pick_huin TYPE xfeld VALUE IS INITIAL.
+  DATA: lv_pickhu_skip         TYPE /scwm/de_rf_skiphu.
+  DATA: lv_data_entry          TYPE /scwm/de_data_entry.
+  DATA: lv_line                TYPE i.
+
+  BREAK-POINT ID /scwm/rf_picking.
+
+  CLEAR lv_leave_trans.
+  CLEAR gv_nested_save.
+  CLEAR gv_diff_save.
+  CLEAR gv_stock_save.
+
+* Get actual function code
+  lv_ltrans  = /scwm/cl_rf_bll_srvc=>get_ltrans( ).
+  lv_step    = /scwm/cl_rf_bll_srvc=>get_step( ).
+  lv_fcode   = /scwm/cl_rf_bll_srvc=>get_fcode( ).
+
+  CASE lv_fcode.
+
+    WHEN fcode_backf.
+*     Clear REC-Administration Data
+      CALL FUNCTION '/SCWM/REC_RSRC_ADMIN_CLEAR'.
+      IF lv_step = step_source_mtto OR
+         lv_step = step_pick_cpmt   OR
+         lv_step = step_source_huto OR
+         lv_step = step_source_blmt OR
+         lv_step = step_source_blcp OR
+         lv_step = step_source_blhu OR
+         lv_step = step_pbv_cpmt OR
+         lv_step = step_pbv_blcp OR
+         lv_step = 'ZPICK6' OR
+         lv_step = 'PVMTTO' OR
+         lv_step = 'PVHUTO' OR
+         lv_step = 'PVBLMT'.
+*     Check if we are in one of source step.
+        LOOP AT tt_ordim_confirm INTO ls_ordim_confirm.
+          IF ls_ordim_confirm-flghuto IS INITIAL AND
+             ls_ordim_confirm-srsrc IS INITIAL.
+*         If there is one source MTTO need to go back to PIHUIN step.
+            lv_goto_step_pick_huin = gc_xfeld.
+          ENDIF.
+        ENDLOOP.
+*       At least one MTTO was found hence back to Pick-HU intr. screen
+
+        IF lv_goto_step_pick_huin = gc_xfeld.
+
+          lv_line = /scwm/cl_rf_bll_srvc=>get_line( ).
+          if lv_line is INITIAL.
+            lv_line = 1.
+          endif.
+          READ TABLE tt_ordim_confirm into ls_ordim_confirm index lv_line.
+
+          lv_data_entry = /scwm/cl_rf_bll_srvc=>get_data_entry( ).
+          CALL METHOD /scwm/cl_rf_pick_hu_skip=>determine_pickhu_skip_huin
+            EXPORTING
+              iv_data_entry    = lv_data_entry
+              is_ordim_confirm = ls_ordim_confirm
+            CHANGING
+              cv_pickhu_skip   = lv_pickhu_skip.
+
+          IF lv_pickhu_skip = /scwm/cl_rf_pick_hu_skip=>c_skiphu_b_leavetx.
+            lv_leave_trans = gc_xfeld.
+          ELSE.
+*         set process mode to foreground as default
+                      /scwm/cl_rf_bll_srvc=>set_prmod(
+                             /scwm/cl_rf_bll_srvc=>c_prmod_background ).
+
+*         We must navigate forward! Back or UPDBCK is not possible!
+            /scwm/cl_rf_bll_srvc=>set_fcode( fcode_go_to_hu_skip ).
+          ENDIF.
+
+        ELSE.
+*         All HU TOs, going to initial step leaving transaction.
+          lv_leave_trans = gc_xfeld.
+        ENDIF.
+
+      ELSEIF lv_step = step_pick_huin OR
+             lv_step = step_dest_plhu OR
+             lv_step = step_dest_mphu OR
+             lv_step = step_dest_plmt OR
+             lv_step = 'PVHUIN' OR
+             lv_step = 'PVPLHU' OR
+             lv_step = 'PVPLMT'.
+*       going to initial step leaving transaction.
+        lv_leave_trans = gc_xfeld.
+      ELSE.
+*       regular back set process mode to background as default
+        /scwm/cl_rf_bll_srvc=>set_prmod(
+                             /scwm/cl_rf_bll_srvc=>c_prmod_background ).
+*       Set fcode back
+        /scwm/cl_rf_bll_srvc=>set_fcode(
+                                   /scwm/cl_rf_bll_srvc=>c_fcode_back ).
+      ENDIF.
+  ENDCASE.
+ENDFUNCTION.
